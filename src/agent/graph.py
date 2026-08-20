@@ -23,11 +23,14 @@ class CandidateScore(BaseModel):
 APPLY_THRESHOLD = 0.6
 
 
-async def _score_candidate(gateway: LLMGateway, candidate: dict) -> CandidateScore:
+async def _score_candidate(
+    gateway: LLMGateway, candidate: dict, profile: dict
+) -> CandidateScore:
     """Оценить соответствие вакансии профилю через LLM (структурированный вывод).
 
     :param gateway: единая точка доступа к LLM
     :param candidate: словарь с данными вакансии
+    :param profile: профиль соискателя (навыки/опыт) для сопоставления
     :return: оценка соответствия (score + reason)
     """
     return await gateway.invoke_structured(
@@ -38,7 +41,7 @@ async def _score_candidate(gateway: LLMGateway, candidate: dict) -> CandidateSco
                 "Оцени релевантность вакансии профилю соискателя от 0 до 1. "
                 "score — число, reason — краткое обоснование.",
             ),
-            ("human", str(candidate)),
+            ("human", f"Профиль: {profile}\nВакансия: {candidate}"),
         ],
         CandidateScore,
     )
@@ -50,6 +53,8 @@ def build_graph(
     router: IntentRouter | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     get_stats: Callable[[int], Awaitable[dict]] | None = None,
+    applier: Callable[[int, dict], Awaitable[None]] | None = None,
+    profile_provider: Callable[[int], Awaitable[dict]] | None = None,
 ):
     """Собрать граф агента с внедрёнными зависимостями.
 
@@ -58,6 +63,8 @@ def build_graph(
     :param router: IntentRouter (по умолчанию создаётся из gateway)
     :param checkpointer: checkpointer LangGraph (для HITL; обязателен в тестах)
     :param get_stats: async callable(user_id) -> dict — статистика из БД
+    :param applier: async callable(user_id, decision) — реальный отклик (side-effect)
+    :param profile_provider: async callable(user_id) -> dict — профиль соискателя
     :return: скомпилированный граф
     """
     router = router or IntentRouter(gateway)
@@ -74,21 +81,35 @@ def build_graph(
         return {"candidates": candidates}
 
     async def match_node(state: AgentState) -> dict:
-        """Оценить каждую вакансию через LLM-скоринг."""
+        """Оценить каждую вакансию через LLM-скоринг с учётом профиля."""
+        profile = await profile_provider(state["user_id"]) if profile_provider else {}
         decisions = []
         for c in state.get("candidates", []):
-            scored = await _score_candidate(gateway, c)
+            scored = await _score_candidate(gateway, c, profile)
             decisions.append({"job": c, "score": scored.score, "reason": scored.reason})
         return {"decisions": decisions}
 
     async def decision_node(state: AgentState) -> dict:
-        """Вынести решение apply/skip по порогу релевантности."""
+        """Вынести решение apply/skip по порогу релевантности и набросать письмо."""
         final = []
         for d in state.get("decisions", []):
             decision = "apply" if d["score"] >= APPLY_THRESHOLD else "skip"
             d["decision"] = decision
-            # Черновик сопроводительного генерируется на этапе apply
-            d["cover_letter"] = ""
+            if decision == "apply":
+                # Черновик сопроводительного письма под конкретную вакансию
+                msg = await gateway.text_model.ainvoke(
+                    [
+                        (
+                            "system",
+                            "Ты пишешь краткое сопроводительное письмо на русском "
+                            "(3-5 предложений) под конкретную вакансию.",
+                        ),
+                        ("human", f"Вакансия: {d['job']}"),
+                    ]
+                )
+                d["cover_letter"] = msg.content
+            else:
+                d["cover_letter"] = ""
             final.append(d)
         return {"decisions": final}
 
@@ -116,6 +137,9 @@ def build_graph(
                 )
                 if approval is not True:
                     continue
+            # Реальное выполнение отклика через внедрённый side-effect
+            if applier is not None:
+                await applier(state["user_id"], d)
             applied.append(d)
         return {"decisions": applied, "needs_human": False, "pending_action": None}
 

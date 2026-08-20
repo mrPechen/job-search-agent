@@ -76,6 +76,19 @@ class BrowserExecutor:
         r.raise_for_status()
         return r.json()
 
+    async def submit_application(self, user_id: int, cover_letter: str = "") -> dict:
+        """Откликнуться на вакансию через browser-сервис.
+
+        :param user_id: идентификатор пользователя
+        :param cover_letter: текст сопроводительного письма
+        :return: словарь с результатом операции
+        """
+        r = await self._client.post(
+            "/submit", json={"user_id": user_id, "cover_letter": cover_letter}
+        )
+        r.raise_for_status()
+        return r.json()
+
     async def close(self) -> None:
         """Закрыть HTTP-клиент и освободить ресурсы."""
         await self._client.aclose()

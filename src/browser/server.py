@@ -93,6 +93,13 @@ class MessageRequest(BaseModel):
     text: str
 
 
+class SubmitRequest(BaseModel):
+    """Тело запроса отклика на вакансию с сопроводительным письмом."""
+
+    user_id: int
+    cover_letter: str = ""
+
+
 class BrowserManager:
     """Управление пулом персистентных Playwright-контекстов по пользователям.
 
@@ -227,6 +234,43 @@ class BrowserManager:
             await page.press(input_selector, "Enter")
         return {"ok": True}
 
+    async def submit_application(self, user_id: int, cover_letter: str = "") -> dict:
+        """Откликнуться на вакансию: кнопка отклика → письмо → подтверждение.
+
+        :param user_id: идентификатор пользователя
+        :param cover_letter: текст сопроводительного письма (может быть пустым)
+        :return: словарь с результатом операции
+        :raises LookupError: если кнопка отклика отсутствует на странице
+        """
+        await self._throttle(user_id)
+        page = await self.get_page(user_id)
+
+        # ШАГ 1: клик по кнопке отклика (первый подходящий селектор hh.ru)
+        if not await page.query_selector(HhAdapter.APPLY_BUTTON):
+            raise LookupError("Кнопка отклика не найдена")
+        await page.click(HhAdapter.APPLY_BUTTON)
+
+        # ШАГ 2: заполнить сопроводительное письмо, если на странице есть поле
+        if cover_letter:
+            cover_el = await page.query_selector(
+                "textarea[data-qa='cover-letter'], #cover-letter"
+            )
+            if cover_el is None:
+                # Фолбэк: первый видимый textarea на странице
+                for candidate in await page.query_selector_all("textarea"):
+                    if await candidate.is_visible():
+                        cover_el = candidate
+                        break
+            if cover_el is not None:
+                await cover_el.fill(cover_letter)
+
+        # ШАГ 3: подтвердить отправку, если есть кнопка подтверждения
+        submit_selector = "button[data-qa='submit-application'], #submit-application"
+        if await page.query_selector(submit_selector):
+            await page.click(submit_selector)
+
+        return {"ok": True}
+
     async def close(self) -> None:
         """Закрыть все контексты и остановить Playwright-драйвер."""
         for context in self._contexts.values():
@@ -300,6 +344,13 @@ def build_browser_app(profiles_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=reason)
         try:
             return await manager.send_message(req.user_id, req.text)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/submit")
+    async def submit(req: SubmitRequest) -> dict:
+        try:
+            return await manager.submit_application(req.user_id, req.cover_letter)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 

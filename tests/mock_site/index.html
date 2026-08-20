@@ -7,7 +7,12 @@
 <body>
   <h1>Вакансия: Python разработчик</h1>
   <p>Требования: Python, FastAPI, PostgreSQL.</p>
-  <button id="apply-btn" data-qa="vacancy-response-submit">Откликнуться</button>
+  <a id="apply-btn" data-qa="vacancy-response-submit">Откликнуться</a>
+  <div id="apply-form">
+    <textarea id="cover-letter" data-qa="cover-letter"></textarea>
+    <button id="submit-application" data-qa="submit-application">Отправить отклик</button>
+    <div id="apply-log"></div>
+  </div>
   <hr>
   <textarea id="chat-input" data-qa="chat_input"></textarea>
   <button id="send-btn" data-qa="chat_send_button">Отправить</button>
@@ -31,6 +36,14 @@
         e.preventDefault();
         sendMessage();
       }
+    });
+
+    // Фиксация отклика: копируем сопроводительное письмо в apply-log
+    const submit = document.getElementById("submit-application");
+    const cover = document.getElementById("cover-letter");
+    const applyLog = document.getElementById("apply-log");
+    submit.addEventListener("click", () => {
+      applyLog.textContent = cover.value;
     });
   </script>
 </body>
