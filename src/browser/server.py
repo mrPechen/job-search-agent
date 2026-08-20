@@ -6,7 +6,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Response
-from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
 from pydantic import BaseModel
 
 from config import settings
@@ -102,12 +108,13 @@ class SubmitRequest(BaseModel):
 
 
 class BrowserManager:
-    """Управление пулом персистентных Playwright-контекстов по пользователям.
+    """Управление браузером: свой Playwright-профиль ИЛИ подключение к Chrome.
 
-    Для каждого user_id создаётся отдельный профиль (user-data-dir), чтобы
-    сохранять сессии/куки между запусками. Контексты создаются лениво и
-    кэшируются в словаре. Каждое действие ограничено минимальным интервалом,
-    чтобы вести себя «вежливо» и не попасть под анти-бан.
+    Два режима работы:
+    - "persistent" (по умолчанию): собственный Chromium Playwright с отдельным
+      профилем на каждого пользователя (user-data-dir).
+    - "cdp": подключение к уже запущенному локальному Chrome по Chrome DevTools
+      Protocol — используется текущая сессия пользователя (его логины/куки).
     """
 
     def __init__(
@@ -115,12 +122,17 @@ class BrowserManager:
         profiles_dir: Path,
         min_interval: float = MIN_ACTION_INTERVAL,
         headless: bool = False,
+        mode: str = "persistent",
+        cdp_url: str = "http://localhost:9222",
     ) -> None:
         self._profiles_dir = profiles_dir
         self._min_interval = min_interval
         self._headless = headless
+        self._mode = mode
+        self._cdp_url = cdp_url
         self._contexts: dict[int, BrowserContext] = {}
         self._playwright: Playwright | None = None
+        self._cdp_browser: Browser | None = None
         self._last_action: dict[int, float] = {}
 
     async def _get_playwright(self) -> Playwright:
@@ -129,12 +141,31 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
         return self._playwright
 
-    async def get_context(self, user_id: int) -> BrowserContext:
-        """Вернуть (создав при необходимости) персистентный контекст пользователя.
+    async def _get_cdp_browser(self) -> Browser:
+        """Лениво подключиться к локальному Chrome по CDP."""
+        if self._cdp_browser is None:
+            playwright = await self._get_playwright()
+            self._cdp_browser = await playwright.chromium.connect_over_cdp(
+                self._cdp_url
+            )
+            logger.info("Подключён к Chrome по CDP: %s", self._cdp_url)
+        return self._cdp_browser
 
-        :param user_id: идентификатор пользователя
-        :return: Playwright-контекст с отдельным профилем
+    async def get_context(self, user_id: int) -> BrowserContext:
+        """Вернуть браузерный контекст пользователя.
+
+        :param user_id: идентификатор пользователя (в CDP-режиме игнорируется)
+        :return: Playwright-контекст
+        :raises RuntimeError: в CDP-режиме, если в Chrome нет открытых вкладок
         """
+        if self._mode == "cdp":
+            browser = await self._get_cdp_browser()
+            if not browser.contexts:
+                raise RuntimeError(
+                    "В подключённом Chrome нет открытых вкладок — открой хотя бы одну"
+                )
+            return browser.contexts[0]
+
         if user_id not in self._contexts:
             playwright = await self._get_playwright()
             user_data_dir = self._profiles_dir / str(user_id)
@@ -277,28 +308,38 @@ class BrowserManager:
         return {"ok": True}
 
     async def close(self) -> None:
-        """Закрыть все контексты и остановить Playwright-драйвер."""
+        """Закрыть ресурсы. В CDP-режиме НЕ закрываем Chrome пользователя."""
         for context in self._contexts.values():
             await context.close()
         self._contexts.clear()
+        # В CDP-режиме Chrome — внешний процесс: не вызываем browser.close(),
+        # иначе закроем браузер пользователя. Остановка драйвера просто отключает CDP.
+        self._cdp_browser = None
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
 
 
 def build_browser_app(
-    profiles_dir: Path | None = None, headless: bool | None = None
+    profiles_dir: Path | None = None,
+    headless: bool | None = None,
+    mode: str | None = None,
+    cdp_url: str | None = None,
 ) -> FastAPI:
     """Собрать FastAPI-приложение browser-сервиса.
 
     :param profiles_dir: каталог для персистентных профилей (для тестов —
         временный каталог)
     :param headless: True — без окна браузера (сервер/CI), False — видимое окно
+    :param mode: "persistent" (свой Chromium) или "cdp" (подключение к Chrome)
+    :param cdp_url: адрес CDP Chrome (для mode="cdp")
     :return: готовое FastAPI-приложение
     """
     manager = BrowserManager(
         profiles_dir=profiles_dir or (Path.cwd() / ".browser_profiles"),
         headless=settings.BROWSER_HEADLESS if headless is None else headless,
+        mode=settings.BROWSER_MODE if mode is None else mode,
+        cdp_url=settings.BROWSER_CDP_URL if cdp_url is None else cdp_url,
     )
 
     @asynccontextmanager

@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     # Browser executor
     BROWSER_EXECUTOR_URL: str = "http://localhost:8010"
     BROWSER_HEADLESS: bool = False  # False — видимое окно браузера на локальной машине
+    BROWSER_MODE: str = "persistent"  # persistent | cdp (подключение к твоему Chrome)
+    BROWSER_CDP_URL: str = "http://localhost:9222"
 
     # Telegram
     TG_BOT_TOKEN: str = ""

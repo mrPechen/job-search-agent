@@ -83,3 +83,35 @@ ollama pull llama3.2
 
 В `.env` укажи `LLM_PROVIDER=ollama` и `OLLAMA_BASE_URL=http://localhost:11434`
 (при запуске агента внутри Docker используй `http://host.docker.internal:11434`).
+
+## Использовать свой Chrome с текущей сессией (CDP)
+
+По умолчанию browser-сервис запускает собственный Chromium Playwright с отдельным
+профилем. Чтобы агент работал **в твоём реальном Chrome** (с твоими логинами,
+например уже выполненным входом на hh.ru), используй режим CDP:
+
+1. Полностью закрой Chrome (иначе флаг отладки не подхватится).
+2. Запусти Chrome с портом отладки:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+```
+
+3. В `.env` укажи:
+
+```bash
+BROWSER_MODE=cdp
+BROWSER_CDP_URL=http://localhost:9222
+```
+
+4. Запусти browser-сервис **локально** (не в Docker — в контейнере нет доступа к
+   твоему Chrome):
+
+```bash
+uv run uvicorn src.browser.server:build_browser_app --factory --host 0.0.0.0 --port 8010
+```
+
+Теперь агент ходит по тому же Chrome, где ты залогинен, и видит твою текущую
+сессию. Важно: режим CDP работает только с Chrome/Chromium/Edge — Safari не
+поддерживает CDP.
+
