@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jobagent
+      POSTGRES_PASSWORD: jobagent
+      POSTGRES_DB: jobagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  app:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  browser:
+    build: .
+    command: uvicorn src.browser.server:build_browser_app --factory --host 0.0.0.0 --port 8010
+    env_file: .env
+    ports:
+      - "8010:8010"
+    volumes:
+      - browser_profiles:/app/.browser_profiles
+
+  tg-bot:
+    build: .
+    command: python -m src.tg.bot
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      REDIS_URL: redis://redis:6379
+      BROWSER_EXECUTOR_URL: http://browser:8010
+    depends_on:
+      - postgres
+      - browser
+
+  worker:
+    build: .
+    command: arq src.worker.WorkerSettings
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+
+  ollama:
+    image: ollama/ollama
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+
+volumes:
+  pgdata:
+  browser_profiles:

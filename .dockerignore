@@ -5,3 +5,5 @@ __pycache__
 .gitignore
 .env
 docs
+.pytest_cache
+.browser_profiles
