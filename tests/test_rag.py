@@ -1,0 +1,88 @@
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from src.database.db_settings import Base
+from src.database.models import User
+from src.rag.ingest import chunk_by_sections, extract_cv_text
+from src.rag.retrieve import retrieve_relevant, store_chunks
+
+
+def test_chunk_by_sections_splits_on_blank_lines():
+    text = "Навыки: Python\nSQL\n\nОпыт:\nИнженер\n\nЦель: разработчик"
+    chunks = chunk_by_sections(text)
+    assert chunks == [
+        "Навыки: Python\nSQL",
+        "Опыт:\nИнженер",
+        "Цель: разработчик",
+    ]
+
+
+def test_chunk_by_sections_splits_long_chunk():
+    long_text = "word " * 400  # 2000 символов — больше max_chars (1500)
+    chunks = chunk_by_sections(long_text)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 1500 for chunk in chunks)
+
+
+async def test_extract_cv_text_docx(tmp_path):
+    import docx
+
+    doc = docx.Document()
+    doc.add_paragraph("Иван Иванов")
+    doc.add_paragraph("Python-разработчик")
+    path = tmp_path / "cv.docx"
+    doc.save(str(path))
+
+    text = await extract_cv_text(path)
+
+    assert "Иван Иванов" in text
+    assert "Python-разработчик" in text
+
+
+@pytest.fixture(scope="module")
+def pg_url():
+    """Поднять контейнер pgvector или пропустить тест, если Docker недоступен."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+
+        container = PostgresContainer("pgvector/pgvector:pg16")
+        container.start()
+    except Exception as exc:  # noqa: BLE001 - любая ошибка запуска = нет Docker
+        pytest.skip(f"Docker недоступен: {exc}")
+    url = container.get_connection_url(driver="asyncpg")
+    yield url
+    container.stop()
+
+
+async def test_store_and_retrieve_relevant(pg_url):
+    engine = create_async_engine(pg_url)
+
+    # Подготовка схемы: расширение vector + все таблицы Base
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Документ ссылается на users.id, поэтому нужна запись пользователя
+    async with session_factory() as session:
+        session.add(User(id=1, telegram_id="t1"))
+        await session.commit()
+
+    # Чанк A близок к запросу, чанк B — противоположен
+    emb_a = [1.0] * 1536
+    emb_b = [-1.0] * 1536
+    async with session_factory() as session:
+        count = await store_chunks(
+            session, 1, ["Python developer", "Sales manager"], [emb_a, emb_b]
+        )
+        await session.commit()
+        assert count == 2
+
+    async with session_factory() as session:
+        result = await retrieve_relevant(session, 1, [1.0] * 1536, top_k=2)
+        assert len(result) == 2
+        assert result[0].chunk_text == "Python developer"
+
+    await engine.dispose()
