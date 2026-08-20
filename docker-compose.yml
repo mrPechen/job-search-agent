@@ -32,6 +32,8 @@ services:
     build: .
     command: uvicorn src.browser.server:build_browser_app --factory --host 0.0.0.0 --port 8010
     env_file: .env
+    environment:
+      BROWSER_HEADLESS: "true"
     ports:
       - "8010:8010"
     volumes:

@@ -29,7 +29,7 @@ def mock_site():
 @pytest_asyncio.fixture
 async def browser_client(tmp_path):
     """Собрать browser-приложение in-process и вернуть HTTP-клиент к нему."""
-    app = build_browser_app(profiles_dir=tmp_path / "profiles")
+    app = build_browser_app(profiles_dir=tmp_path / "profiles", headless=True)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

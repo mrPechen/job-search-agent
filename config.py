@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     # Browser executor
     BROWSER_EXECUTOR_URL: str = "http://localhost:8010"
+    BROWSER_HEADLESS: bool = False  # False — видимое окно браузера на локальной машине
 
     # Telegram
     TG_BOT_TOKEN: str = ""

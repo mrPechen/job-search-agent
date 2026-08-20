@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Response
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 from pydantic import BaseModel
 
+from config import settings
 from src.agent.guardrails import check_outgoing_message
 from src.browser.adapters import HhAdapter
 
@@ -110,10 +111,14 @@ class BrowserManager:
     """
 
     def __init__(
-        self, profiles_dir: Path, min_interval: float = MIN_ACTION_INTERVAL
+        self,
+        profiles_dir: Path,
+        min_interval: float = MIN_ACTION_INTERVAL,
+        headless: bool = False,
     ) -> None:
         self._profiles_dir = profiles_dir
         self._min_interval = min_interval
+        self._headless = headless
         self._contexts: dict[int, BrowserContext] = {}
         self._playwright: Playwright | None = None
         self._last_action: dict[int, float] = {}
@@ -138,7 +143,7 @@ class BrowserManager:
             self._contexts[user_id] = (
                 await playwright.chromium.launch_persistent_context(
                     user_data_dir=str(user_data_dir),
-                    headless=True,
+                    headless=self._headless,
                 )
             )
         return self._contexts[user_id]
@@ -281,15 +286,19 @@ class BrowserManager:
             self._playwright = None
 
 
-def build_browser_app(profiles_dir: Path | None = None) -> FastAPI:
+def build_browser_app(
+    profiles_dir: Path | None = None, headless: bool | None = None
+) -> FastAPI:
     """Собрать FastAPI-приложение browser-сервиса.
 
     :param profiles_dir: каталог для персистентных профилей (для тестов —
         временный каталог)
+    :param headless: True — без окна браузера (сервер/CI), False — видимое окно
     :return: готовое FastAPI-приложение
     """
     manager = BrowserManager(
-        profiles_dir=profiles_dir or (Path.cwd() / ".browser_profiles")
+        profiles_dir=profiles_dir or (Path.cwd() / ".browser_profiles"),
+        headless=settings.BROWSER_HEADLESS if headless is None else headless,
     )
 
     @asynccontextmanager
