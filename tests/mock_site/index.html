@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Mock Job Site</title>
+</head>
+<body>
+  <h1>Вакансия: Python разработчик</h1>
+  <p>Требования: Python, FastAPI, PostgreSQL.</p>
+  <button id="apply-btn" data-qa="vacancy-response-submit">Откликнуться</button>
+  <hr>
+  <textarea id="chat-input" data-qa="chat_input"></textarea>
+  <button id="send-btn" data-qa="chat_send_button">Отправить</button>
+  <div id="chat-log"></div>
+  <script>
+    const input = document.getElementById("chat-input");
+    const log = document.getElementById("chat-log");
+    const send = document.getElementById("send-btn");
+    function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+      const div = document.createElement("div");
+      div.className = "chat-message";
+      div.textContent = text;
+      log.appendChild(div);
+      input.value = "";
+    }
+    send.addEventListener("click", sendMessage);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
