@@ -38,3 +38,6 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.black]
+target-version = ["py312"]
