@@ -110,11 +110,13 @@ class SubmitRequest(BaseModel):
 class BrowserManager:
     """Управление браузером: свой Playwright-профиль ИЛИ подключение к Chrome.
 
-    Два режима работы:
-    - "persistent" (по умолчанию): собственный Chromium Playwright с отдельным
-      профилем на каждого пользователя (user-data-dir).
+    Режимы работы:
+    - "persistent": собственный Chromium Playwright с отдельным профилем на
+      каждого пользователя (user-data-dir).
     - "cdp": подключение к уже запущенному локальному Chrome по Chrome DevTools
       Protocol — используется текущая сессия пользователя (его логины/куки).
+    - "auto": сначала пробует CDP; при недоступности Chrome откатывается на
+      собственный Chromium (persistent).
     """
 
     def __init__(
@@ -133,6 +135,7 @@ class BrowserManager:
         self._contexts: dict[int, BrowserContext] = {}
         self._playwright: Playwright | None = None
         self._cdp_browser: Browser | None = None
+        self._cdp_failed = False
         self._last_action: dict[int, float] = {}
 
     async def _get_playwright(self) -> Playwright:
@@ -156,16 +159,39 @@ class BrowserManager:
 
         :param user_id: идентификатор пользователя (в CDP-режиме игнорируется)
         :return: Playwright-контекст
-        :raises RuntimeError: в CDP-режиме, если в Chrome нет открытых вкладок
+        :raises RuntimeError: в CDP-режиме, если подключиться к Chrome не удалось
         """
-        if self._mode == "cdp":
-            browser = await self._get_cdp_browser()
-            if not browser.contexts:
+        # Режимы cdp и auto сначала пробуют подключиться к Chrome пользователя
+        if self._mode in ("cdp", "auto") and not self._cdp_failed:
+            context = await self._try_cdp()
+            if context is not None:
+                return context
+            if self._mode == "cdp":
                 raise RuntimeError(
-                    "В подключённом Chrome нет открытых вкладок — открой хотя бы одну"
+                    f"Не удалось подключиться к Chrome по CDP ({self._cdp_url}). "
+                    "Запусти Chrome с --remote-debugging-port=9222."
                 )
-            return browser.contexts[0]
+            # Режим auto: откатываемся на собственный Chromium и запоминаем решение
+            self._cdp_failed = True
+            logger.warning("CDP недоступен — использую собственный Chromium Playwright")
 
+        return await self._get_persistent_context(user_id)
+
+    async def _try_cdp(self) -> BrowserContext | None:
+        """Попытаться получить контекст Chrome по CDP; None при любой неудаче."""
+        try:
+            browser = await self._get_cdp_browser()
+        except Exception as exc:
+            logger.warning("Подключение к Chrome по CDP не удалось: %s", exc)
+            self._cdp_browser = None
+            return None
+        if not browser.contexts:
+            logger.warning("В Chrome нет открытых вкладок")
+            return None
+        return browser.contexts[0]
+
+    async def _get_persistent_context(self, user_id: int) -> BrowserContext:
+        """Создать (лениво) собственный персистентный контекст Playwright."""
         if user_id not in self._contexts:
             playwright = await self._get_playwright()
             user_data_dir = self._profiles_dir / str(user_id)

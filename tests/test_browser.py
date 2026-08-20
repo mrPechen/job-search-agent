@@ -29,7 +29,9 @@ def mock_site():
 @pytest_asyncio.fixture
 async def browser_client(tmp_path):
     """Собрать browser-приложение in-process и вернуть HTTP-клиент к нему."""
-    app = build_browser_app(profiles_dir=tmp_path / "profiles", headless=True)
+    app = build_browser_app(
+        profiles_dir=tmp_path / "profiles", headless=True, mode="persistent"
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -56,6 +58,24 @@ async def test_extract_finds_interactive_elements(mock_site, browser_client):
 
     assert any("Откликнуться" in text for text in texts)
     assert "textarea" in tags
+
+
+async def test_auto_mode_falls_back_when_cdp_unavailable(tmp_path):
+    """Режим auto: при недоступном Chrome откатывается на собственный Chromium."""
+    from src.browser.server import BrowserManager
+
+    manager = BrowserManager(
+        profiles_dir=tmp_path / "profiles",
+        headless=True,
+        mode="auto",
+        cdp_url="http://localhost:59999",
+    )
+    try:
+        context = await manager.get_context(1)
+        assert context is not None
+        assert manager._cdp_failed is True
+    finally:
+        await manager.close()
 
 
 async def test_message_with_secret_is_blocked(browser_client):
