@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from src.agent.policy import requires_human_approval
 from src.agent.router import IntentRouter
 from src.agent.state import AgentState
+from src.core.audit import log_action
 from src.llm.gateway import LLMGateway
 
 
@@ -45,16 +46,18 @@ async def _score_candidate(gateway: LLMGateway, candidate: dict) -> CandidateSco
 
 def build_graph(
     gateway: LLMGateway,
-    searcher: Callable[[int], Awaitable[list[dict]]],
+    searcher: Callable[[int, str], Awaitable[list[dict]]],
     router: IntentRouter | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    get_stats: Callable[[int], Awaitable[dict]] | None = None,
 ):
     """Собрать граф агента с внедрёнными зависимостями.
 
     :param gateway: LLMGateway (для классификации, скоринга, чата)
-    :param searcher: async callable(user_id) -> list[dict] — поиск вакансий
+    :param searcher: async callable(user_id, query) -> list[dict] — поиск вакансий
     :param router: IntentRouter (по умолчанию создаётся из gateway)
     :param checkpointer: checkpointer LangGraph (для HITL; обязателен в тестах)
+    :param get_stats: async callable(user_id) -> dict — статистика из БД
     :return: скомпилированный граф
     """
     router = router or IntentRouter(gateway)
@@ -65,8 +68,9 @@ def build_graph(
         return {"intent": intent.intent}
 
     async def search_node(state: AgentState) -> dict:
-        """Найти вакансии через внедрённый searcher."""
-        candidates = await searcher(state["user_id"])
+        """Найти вакансии через внедрённый searcher по запросу пользователя."""
+        query = state.get("user_message", "")
+        candidates = await searcher(state["user_id"], query)
         return {"candidates": candidates}
 
     async def match_node(state: AgentState) -> dict:
@@ -103,6 +107,13 @@ def build_graph(
                         "cover_letter": d.get("cover_letter", ""),
                     }
                 )
+                # Аудит: что агент хотел сделать и какое решение принято
+                log_action(
+                    state["user_id"],
+                    "apply",
+                    "approved" if approval is True else "rejected",
+                    {"job": d.get("job", {})},
+                )
                 if approval is not True:
                     continue
             applied.append(d)
@@ -114,6 +125,18 @@ def build_graph(
         report = {"applied_count": applied_count, "replied_count": 0}
         reply = f"Откликнулся на {applied_count} вакансий"
         return {"report": report, "reply": reply}
+
+    async def stats_node(state: AgentState) -> dict:
+        """Вернуть накопленную статистику пользователя из БД."""
+        if get_stats is None:
+            reply = "Статистика недоступна"
+            return {"report": {"applied_count": 0, "replied_count": 0}, "reply": reply}
+        stats = await get_stats(state["user_id"])
+        reply = (
+            f"Всего откликов: {stats.get('applied_count', 0)}, "
+            f"общений с работодателями: {stats.get('replied_count', 0)}"
+        )
+        return {"report": stats, "reply": reply}
 
     async def chat_node(state: AgentState) -> dict:
         """Ответить пользователю в свободном режиме чата."""
@@ -135,9 +158,9 @@ def build_graph(
         if intent == "search_job":
             return "search"
         if intent == "stats":
-            return "report"
+            return "stats"
         if intent == "confirm":
-            return "report"  # подтверждения обрабатываются через resume HITL
+            return "chat"  # подтверждения обрабатываются через resume HITL
         return "chat"
 
     graph = StateGraph(AgentState)
@@ -147,19 +170,21 @@ def build_graph(
     graph.add_node("decision", decision_node)
     graph.add_node("apply", apply_node)
     graph.add_node("report", report_node)
+    graph.add_node("stats", stats_node)
     graph.add_node("chat", chat_node)
 
     graph.add_edge(START, "router")
     graph.add_conditional_edges(
         "router",
         route_by_intent,
-        {"search": "search", "report": "report", "chat": "chat"},
+        {"search": "search", "stats": "stats", "chat": "chat"},
     )
     graph.add_edge("search", "match")
     graph.add_edge("match", "decision")
     graph.add_edge("decision", "apply")
     graph.add_edge("apply", "report")
     graph.add_edge("report", END)
+    graph.add_edge("stats", END)
     graph.add_edge("chat", END)
 
     return graph.compile(checkpointer=checkpointer)

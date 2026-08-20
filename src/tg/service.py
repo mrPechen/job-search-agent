@@ -1,3 +1,5 @@
+import re
+
 from langgraph.types import Command
 
 # Точные слова-подтверждения HITL-действия
@@ -13,7 +15,16 @@ _APPROVE_WORDS = (
 )
 
 # Слова-отказы: обрабатываются в первую очередь, чтобы «не отправляй» не считалось одобрением
-_REJECT_WORDS = ("нет", "no", "не ", "не отправляй", "стоп", "отмена", "откаж")
+_REJECT_WORDS = ("нет", "no", "не ", "стоп", "отмена", "откаж", "не надо")
+
+
+def _has_keyword(lower: str, words: tuple[str, ...]) -> bool:
+    """Проверить вхождение ключевого слова по границе слова.
+
+    Граница слова нужна, чтобы короткие слова («да», «ок») не совпадали
+    внутри обычных слов («подарок», «блок»).
+    """
+    return any(re.search(rf"\b{re.escape(word)}", lower) for word in words)
 
 
 class TgService:
@@ -76,9 +87,9 @@ class TgService:
         """
         lower = text.lower().strip()
         # Отказ приоритетнее: «не отправляй» не должно считаться подтверждением
-        if any(w in lower for w in _REJECT_WORDS):
+        if _has_keyword(lower, _REJECT_WORDS):
             return False
-        return any(w in lower for w in _APPROVE_WORDS)
+        return _has_keyword(lower, _APPROVE_WORDS)
 
     def _build_reply(self, result: dict) -> str:
         """Сформировать текст ответа из результата работы графа.

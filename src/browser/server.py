@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Response
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 from pydantic import BaseModel
 
+from src.agent.guardrails import check_outgoing_message
 from src.browser.adapters import HhAdapter
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,10 @@ def build_browser_app(profiles_dir: Path | None = None) -> FastAPI:
 
     @app.post("/message")
     async def send_message(req: MessageRequest) -> dict:
+        # Контент-гардрейл: не отправляем наружу сообщения с утечкой секретов
+        ok, reason = check_outgoing_message(req.text)
+        if not ok:
+            raise HTTPException(status_code=400, detail=reason)
         try:
             return await manager.send_message(req.user_id, req.text)
         except LookupError as exc:

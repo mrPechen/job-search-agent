@@ -12,9 +12,16 @@ from src.browser.executor import BrowserExecutor
 from src.browser.searcher import HhSearcher
 from src.database.db_settings import SessionLocal
 from src.llm.gateway import LLMGateway
+from src.stats.aggregate import get_user_stats
 from src.tg.service import TgService
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_stats(user_id: int) -> dict:
+    """Получить статистику пользователя из БД (открывает сессию на запрос)."""
+    async with SessionLocal() as session:
+        return await get_user_stats(session, user_id)
 
 
 def build_tg_service() -> TgService:
@@ -29,6 +36,7 @@ def build_tg_service() -> TgService:
         searcher,
         router=IntentRouter(gateway),
         checkpointer=MemorySaver(),
+        get_stats=_get_stats,
     )
     return TgService(graph, SessionLocal)
 

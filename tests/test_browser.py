@@ -58,6 +58,15 @@ async def test_extract_finds_interactive_elements(mock_site, browser_client):
     assert "textarea" in tags
 
 
+async def test_message_with_secret_is_blocked(browser_client):
+    """Сообщение с утечкой секрета отклоняется гардрейлом (400)."""
+    r = await browser_client.post(
+        "/message",
+        json={"user_id": 1, "text": "мой ключ sk-abcdefghijklmnopqrstuvwxyz123456"},
+    )
+    assert r.status_code == 400
+
+
 async def test_click_and_type_and_send(mock_site, browser_client):
     await browser_client.post(
         "/navigate", json={"user_id": 1, "url": f"{mock_site}/index.html"}

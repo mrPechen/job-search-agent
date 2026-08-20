@@ -8,17 +8,19 @@ class HhSearcher:
     Для MVP использует упрощённый парсинг результатов поиска из extract().
     """
 
-    def __init__(self, browser, query: str = "python developer") -> None:
+    def __init__(self, browser, default_query: str = "python developer") -> None:
         self._browser = browser
-        self._query = query
+        self._default_query = default_query
 
-    async def __call__(self, user_id: int) -> list[dict]:
+    async def __call__(self, user_id: int, query: str = "") -> list[dict]:
         """Найти вакансии по запросу и вернуть список кандидатов.
 
         :param user_id: идентификатор пользователя
+        :param query: поисковый запрос (сообщение пользователя); пустой → default_query
         :return: список вакансий в виде словарей (title + url)
         """
-        url = f"{HhAdapter.SEARCH_URL}?text={self._query.replace(' ', '+')}"
+        text = (query or self._default_query).replace(" ", "+")
+        url = f"{HhAdapter.SEARCH_URL}?text={text}"
         await self._browser.navigate(user_id, url)
         page = await self._browser.extract(user_id)
         return self._parse_candidates(page)

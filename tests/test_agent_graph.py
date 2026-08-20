@@ -34,7 +34,7 @@ class FakeSearcher:
     def __init__(self, candidates: list[dict]) -> None:
         self._candidates = candidates
 
-    async def __call__(self, user_id: int) -> list[dict]:
+    async def __call__(self, user_id: int, query: str = "") -> list[dict]:
         return self._candidates
 
 

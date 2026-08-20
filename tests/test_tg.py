@@ -38,7 +38,7 @@ class FakeSearcher:
     def __init__(self, candidates: list[dict]) -> None:
         self._candidates = candidates
 
-    async def __call__(self, user_id: int) -> list[dict]:
+    async def __call__(self, user_id: int, query: str = "") -> list[dict]:
         return self._candidates
 
 
@@ -116,6 +116,15 @@ def test_is_approval_rejects_negation():
     assert service._is_approval("да") is True
     assert service._is_approval("не отправляй") is False
     assert service._is_approval("нет") is False
+
+
+def test_is_approval_does_not_match_inside_words():
+    """Короткие слова («да», «ок») не должны совпадать внутри других слов."""
+    service = _build_service(FakeGateway(intent="chat"))
+    assert service._is_approval("подарок") is False
+    assert service._is_approval("свидание") is False
+    assert service._is_approval("блок") is False
+    assert service._is_approval("интернет") is False
 
 
 async def test_confirm_resumes_and_reports():
