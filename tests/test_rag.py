@@ -4,8 +4,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.database.db_settings import Base
 from src.database.models import User
-from src.rag.ingest import chunk_by_sections, extract_cv_text
+from src.rag.ingest import build_embeddings, chunk_by_sections, extract_cv_text
 from src.rag.retrieve import retrieve_relevant, store_chunks
+
+
+def test_build_embeddings_ollama():
+    """Ollama-эмбеддинги создаются без сетевого вызова."""
+    emb = build_embeddings("ollama", "nomic-embed-text", "", "http://localhost:11434")
+    assert emb.model == "nomic-embed-text"
+
+
+def test_build_embeddings_unknown_provider_raises():
+    with pytest.raises(ValueError):
+        build_embeddings("unknown", "m", "", "")
 
 
 def test_chunk_by_sections_splits_on_blank_lines():

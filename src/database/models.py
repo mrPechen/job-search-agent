@@ -5,6 +5,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from config import settings
 from src.database.db_settings import Base
 
 
@@ -41,7 +42,9 @@ class Document(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     chunk_text: Mapped[str] = mapped_column(Text)
-    embedding: Mapped[list] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list] = mapped_column(
+        Vector(settings.EMBEDDING_DIM), nullable=True
+    )
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
 

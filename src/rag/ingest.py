@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
 
@@ -60,15 +61,25 @@ def chunk_by_sections(text: str, max_chars: int = 1500) -> list[str]:
 
 def build_embeddings(
     provider: str, model: str, api_key: str, base_url: str = ""
-) -> OpenAIEmbeddings:
-    """Создать модель эмбеддингов. Провайдер openai (Ollama-эмбеддинги — позже)."""
+) -> Embeddings:
+    """Создать модель эмбеддингов по имени провайдера.
+
+    :param provider: openai | ollama
+    :param model: имя модели эмбеддингов
+    :param api_key: ключ API (для openai)
+    :param base_url: базовый URL (для ollama)
+    :return: модель эмбеддингов
+    :raises ValueError: если провайдер неизвестен
+    """
     if provider == "openai":
         return OpenAIEmbeddings(model=model, api_key=api_key)
+    if provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
+        return OllamaEmbeddings(model=model, base_url=base_url)
     raise ValueError(f"Провайдер эмбеддингов не поддерживается: {provider}")
 
 
-async def embed_chunks(
-    embedder: OpenAIEmbeddings, chunks: list[str]
-) -> list[list[float]]:
+async def embed_chunks(embedder: Embeddings, chunks: list[str]) -> list[list[float]]:
     """Посчитать эмбеддинги для списка чанков."""
     return await embedder.aembed_documents(chunks)

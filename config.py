@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIM: int = 1536  # размерность вектора (nomic-embed-text = 768)
 
     # Browser executor
     BROWSER_EXECUTOR_URL: str = "http://localhost:8010"

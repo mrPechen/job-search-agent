@@ -84,6 +84,25 @@ ollama pull llama3.2
 В `.env` укажи `LLM_PROVIDER=ollama` и `OLLAMA_BASE_URL=http://localhost:11434`
 (при запуске агента внутри Docker используй `http://host.docker.internal:11434`).
 
+Для полностью локального RAG (эмбеддинги без OpenAI):
+
+```bash
+ollama pull nomic-embed-text
+```
+
+В `.env`:
+
+```bash
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIM=768
+```
+
+Размерность вектора должна совпадать с моделью эмбеддингов: у
+`nomic-embed-text` — 768, у `mxbai-embed-large` — 1024, у OpenAI
+`text-embedding-3-small` — 1536. После смены `EMBEDDING_DIM` пересоздай колонку
+(проще всего сбросить БД: `docker compose down -v` + заново `alembic upgrade head`),
+т.к. pgvector хранит фиксированную размерность.
+
 ## Использовать свой Chrome с текущей сессией (CDP)
 
 По умолчанию browser-сервис запускает собственный Chromium Playwright с отдельным
