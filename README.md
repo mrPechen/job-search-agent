@@ -56,7 +56,7 @@ curl http://localhost:8000/health   # {"ok":true}
 
 ```bash
 cp .env.example .env
-# заполни OPENAI_API_KEY и TG_BOT_TOKEN
+# заполни OPENAI_API_KEY и TG_BOT_TOKEN, или настрой Ollama (см. ниже)
 uv sync
 uv run alembic upgrade head
 
@@ -72,36 +72,97 @@ uv run python -m src.tg.bot
 uv run pytest -q
 ```
 
-## Локальные LLM (опционально)
+## Локальные LLM через Ollama (без OpenAI)
 
-Для работы без OpenAI API подними Ollama и выбери модели в `.env`:
+Агент умеет работать полностью локально: текстовая модель, vision-модель и
+эмбеддинги для RAG — всё через Ollama.
+
+### 1. Установка Ollama
+
+macOS (Homebrew) или установщик с [ollama.com](https://ollama.com):
 
 ```bash
-docker compose --profile local up -d ollama
-ollama pull llama3.2
+brew install ollama
+ollama --version
 ```
 
-В `.env` укажи `LLM_PROVIDER=ollama` и `OLLAMA_BASE_URL=http://localhost:11434`
-(при запуске агента внутри Docker используй `http://host.docker.internal:11434`).
+### 2. Запуск и включение API
 
-Для полностью локального RAG (эмбеддинги без OpenAI):
+Ollama сразу поднимает HTTP API на `http://localhost:11434` — отдельно включать
+API не нужно, он включён по умолчанию.
+
+- **macOS-приложение** (с ollama.com): запускается как фоновый сервис, API слушает
+  `localhost:11434`.
+- **Через CLI**: `ollama serve`
+
+Проверка, что API жив:
 
 ```bash
-ollama pull nomic-embed-text
+curl http://localhost:11434/api/tags
 ```
 
-В `.env`:
+Если API нужен не только с localhost (например, для агента в Docker-контейнере
+или с другой машины), открой его на всех интерфейсах:
 
 ```bash
+# CLI:
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+
+# macOS-приложение (затем перезапусти приложение):
+launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
+```
+
+Тогда агент из Docker достучится по `http://host.docker.internal:11434`.
+
+### 3. Какие модели установить
+
+```bash
+ollama pull llama3.2          # текстовая модель: интент, скоринг, письма
+ollama pull qwen3-vl:4b       # vision-модель для разбора страниц
+ollama pull nomic-embed-text  # эмбеддинги для RAG (768 измерений)
+```
+
+- Текстовая модель обязана поддерживать structured output (JSON) — `llama3.2`
+  подходит. Альтернативы: `qwen2.5:7b`, `gemma3:4b`.
+- Vision-модель (`LLM_VISION_MODEL`) реально используется агентом: она «смотрит»
+  на страницы и управляет браузером при поиске и отклике на любых сайтах.
+  Для Ollama подойдёт `qwen3-vl:4b` (или `llama3.2-vision`), для облака — `gpt-4o`.
+  При первом общении бот спросит, на каких сайтах искать, и запомнит список для
+  каждого пользователя.
+
+Проверка установленных моделей: `ollama list`.
+
+### 4. Настройка `.env`
+
+```bash
+LLM_PROVIDER=ollama
+LLM_TEXT_MODEL=llama3.2
+LLM_VISION_MODEL=llama3.2-vision
+OLLAMA_BASE_URL=http://localhost:11434
 EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIM=768
 ```
 
-Размерность вектора должна совпадать с моделью эмбеддингов: у
+Размерность `EMBEDDING_DIM` обязана совпадать с моделью эмбеддингов: у
 `nomic-embed-text` — 768, у `mxbai-embed-large` — 1024, у OpenAI
 `text-embedding-3-small` — 1536. После смены `EMBEDDING_DIM` пересоздай колонку
 (проще всего сбросить БД: `docker compose down -v` + заново `alembic upgrade head`),
 т.к. pgvector хранит фиксированную размерность.
+
+### 5. Память и производительность
+
+```bash
+# держать модель загруженной в память (вместо выгрузки после ответа):
+OLLAMA_KEEP_ALIVE=-1
+
+# сколько моделей держать загруженными одновременно (по умолчанию 1):
+OLLAMA_MAX_LOADED_MODELS=2
+
+# ускорить инференс через flash attention (при поддержке GPU):
+OLLAMA_FLASH_ATTENTION=1
+```
+
+Загруженные сейчас модели: `ollama ps`.
 
 ## Использовать свой Chrome с текущей сессией (CDP)
 
