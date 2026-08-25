@@ -55,14 +55,19 @@ _EXTRACT_JS = """
 """
 
 
-def _is_allowed_url(url: str) -> bool:
-    """Проверить, что домен URL входит в whitelist (или является его поддоменом).
+def _is_allowed_url(url: str, allowed_domains: list[str] | None = None) -> bool:
+    """Проверить URL: схема http/https и домен в whitelist (или его поддомен).
 
     :param url: целевой URL
+    :param allowed_domains: список разрешённых доменов; None — статический whitelist
     :return: True, если навигация разрешена
     """
-    hostname = urlparse(url).hostname or ""
-    return any(hostname == d or hostname.endswith("." + d) for d in ALLOWED_DOMAINS)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname or ""
+    domains = allowed_domains if allowed_domains is not None else ALLOWED_DOMAINS
+    return any(hostname == d or hostname.endswith("." + d) for d in domains)
 
 
 class NavigateRequest(BaseModel):
@@ -70,6 +75,14 @@ class NavigateRequest(BaseModel):
 
     user_id: int
     url: str
+    allowed_domains: list[str] | None = None
+
+
+class ScrollRequest(BaseModel):
+    """Тело запроса прокрутки страницы."""
+
+    user_id: int
+    delta: int = 800
 
 
 class UserRequest(BaseModel):
@@ -246,6 +259,20 @@ class BrowserManager:
         page = await self.get_page(user_id)
         return await page.screenshot()
 
+    async def scroll(self, user_id: int, delta: int = 800) -> dict:
+        """Прокрутить страницу на delta пикселей вниз."""
+        await self._throttle(user_id)
+        page = await self.get_page(user_id)
+        await page.mouse.wheel(0, delta)
+        return {"ok": True}
+
+    async def back(self, user_id: int) -> dict:
+        """Вернуться на предыдущую страницу."""
+        await self._throttle(user_id)
+        page = await self.get_page(user_id)
+        await page.go_back()
+        return {"ok": True}
+
     async def click(self, user_id: int, selector: str) -> dict:
         """Кликнуть по элементу; вернуть ошибку, если селектор не найден.
 
@@ -385,7 +412,7 @@ def build_browser_app(
 
     @app.post("/navigate")
     async def navigate(req: NavigateRequest) -> dict:
-        if not _is_allowed_url(req.url):
+        if not _is_allowed_url(req.url, req.allowed_domains):
             raise HTTPException(status_code=403, detail=f"Домен не разрешён: {req.url}")
         return await manager.navigate(req.user_id, req.url)
 
@@ -397,6 +424,14 @@ def build_browser_app(
     async def screenshot(req: UserRequest) -> Response:
         data = await manager.screenshot(req.user_id)
         return Response(content=data, media_type="image/png")
+
+    @app.post("/scroll")
+    async def scroll(req: ScrollRequest) -> dict:
+        return await manager.scroll(req.user_id, req.delta)
+
+    @app.post("/back")
+    async def back(req: UserRequest) -> dict:
+        return await manager.back(req.user_id)
 
     @app.post("/click")
     async def click(req: ClickRequest) -> dict:

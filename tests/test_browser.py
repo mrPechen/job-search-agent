@@ -114,3 +114,34 @@ async def test_submit_application(mock_site, browser_client):
 
     r = await browser_client.post("/extract", json={"user_id": 1})
     assert "Готов приступить" in r.json()["text"]
+
+
+async def test_navigate_with_allowed_domains(mock_site, browser_client):
+    r = await browser_client.post(
+        "/navigate",
+        json={
+            "user_id": 1,
+            "url": f"{mock_site}/index.html",
+            "allowed_domains": ["127.0.0.1"],
+        },
+    )
+    assert r.status_code == 200
+
+
+async def test_navigate_rejects_domain_not_in_allowed_list(browser_client):
+    r = await browser_client.post(
+        "/navigate",
+        json={"user_id": 1, "url": "https://evil.com", "allowed_domains": ["example.com"]},
+    )
+    assert r.status_code == 403
+
+
+async def test_scroll_and_back(mock_site, browser_client):
+    await browser_client.post(
+        "/navigate",
+        json={"user_id": 1, "url": f"{mock_site}/index.html"},
+    )
+    r = await browser_client.post("/scroll", json={"user_id": 1, "delta": 300})
+    assert r.status_code == 200
+    r = await browser_client.post("/back", json={"user_id": 1})
+    assert r.status_code == 200
