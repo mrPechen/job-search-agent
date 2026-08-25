@@ -1,11 +1,19 @@
 import httpx
 
+from config import settings
+
 
 class BrowserExecutor:
     """HTTP-клиент к browser-сервису. Агент зависит только от этого интерфейса."""
 
-    def __init__(self, base_url: str, timeout: float = 60.0) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+    def __init__(
+        self, base_url: str, timeout: float = 60.0, api_token: str | None = None
+    ) -> None:
+        token = settings.BROWSER_API_TOKEN if api_token is None else api_token
+        headers = {"x-browser-token": token} if token else None
+        self._client = httpx.AsyncClient(
+            base_url=base_url, timeout=timeout, headers=headers
+        )
 
     async def navigate(
         self, user_id: int, url: str, allowed_domains: list[str] | None = None

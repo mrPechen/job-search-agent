@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from playwright.async_api import (
     Browser,
     BrowserContext,
@@ -55,6 +55,17 @@ _EXTRACT_JS = """
 """
 
 
+def _normalize_host(raw: str) -> str | None:
+    """Привести запись whitelist к нижнему регистру без схемы/www/точки в конце."""
+    value = raw.strip().lower()
+    if "://" in value:
+        value = urlparse(value).hostname or ""
+    value = value.rstrip(".")
+    if "." not in value:
+        return None
+    return value
+
+
 def _is_allowed_url(url: str, allowed_domains: list[str] | None = None) -> bool:
     """Проверить URL: схема http/https и домен в whitelist (или его поддомен).
 
@@ -66,7 +77,10 @@ def _is_allowed_url(url: str, allowed_domains: list[str] | None = None) -> bool:
     if parsed.scheme not in ("http", "https"):
         return False
     hostname = parsed.hostname or ""
-    domains = allowed_domains if allowed_domains is not None else ALLOWED_DOMAINS
+    if allowed_domains is None:
+        domains = ALLOWED_DOMAINS
+    else:
+        domains = [h for h in (_normalize_host(d) for d in allowed_domains[:200]) if h]
     return any(hostname == d or hostname.endswith("." + d) for d in domains)
 
 
@@ -378,6 +392,7 @@ def build_browser_app(
     headless: bool | None = None,
     mode: str | None = None,
     cdp_url: str | None = None,
+    api_token: str | None = None,
 ) -> FastAPI:
     """Собрать FastAPI-приложение browser-сервиса.
 
@@ -386,6 +401,7 @@ def build_browser_app(
     :param headless: True — без окна браузера (сервер/CI), False — видимое окно
     :param mode: "persistent" (свой Chromium) или "cdp" (подключение к Chrome)
     :param cdp_url: адрес CDP Chrome (для mode="cdp")
+    :param api_token: общий секрет; None — из настроек (settings.BROWSER_API_TOKEN)
     :return: готовое FastAPI-приложение
     """
     manager = BrowserManager(
@@ -395,6 +411,14 @@ def build_browser_app(
         cdp_url=settings.BROWSER_CDP_URL if cdp_url is None else cdp_url,
     )
 
+    token = settings.BROWSER_API_TOKEN if api_token is None else api_token
+
+    async def _require_token(
+        x_browser_token: str | None = Header(default=None),
+    ) -> None:
+        if token and x_browser_token != token:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Контексты создаются лениво, поэтому на старте ничего запускать не нужно
@@ -403,7 +427,11 @@ def build_browser_app(
         await manager.close()
         logger.info("BrowserManager остановлен")
 
-    app = FastAPI(title="Browser Executor", lifespan=lifespan)
+    app = FastAPI(
+        title="Browser Executor",
+        lifespan=lifespan,
+        dependencies=[Depends(_require_token)],
+    )
     app.state.browser_manager = manager
 
     @app.get("/health")

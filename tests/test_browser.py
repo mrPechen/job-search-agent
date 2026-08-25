@@ -128,12 +128,36 @@ async def test_navigate_with_allowed_domains(mock_site, browser_client):
     assert r.status_code == 200
 
 
-async def test_navigate_rejects_domain_not_in_allowed_list(browser_client):
+async def test_navigate_rejects_when_allowed_domains_overrides_static(
+    mock_site, browser_client
+):
     r = await browser_client.post(
         "/navigate",
-        json={"user_id": 1, "url": "https://evil.com", "allowed_domains": ["example.com"]},
+        json={
+            "user_id": 1,
+            "url": f"{mock_site}/index.html",
+            "allowed_domains": ["evil.com"],
+        },
     )
     assert r.status_code == 403
+
+
+async def test_api_token_required(tmp_path):
+    app = build_browser_app(
+        profiles_dir=tmp_path / "profiles",
+        headless=True,
+        mode="persistent",
+        api_token="secret",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post("/extract", json={"user_id": 1})
+        assert r.status_code == 401
+        r = await client.post(
+            "/extract", json={"user_id": 1}, headers={"x-browser-token": "secret"}
+        )
+        assert r.status_code == 200
+    await app.state.browser_manager.close()
 
 
 async def test_scroll_and_back(mock_site, browser_client):

@@ -39,6 +39,7 @@ class Settings(BaseSettings):
         "auto"  # persistent | cdp | auto (cdp с фолбэком на свой браузер)
     )
     BROWSER_CDP_URL: str = "http://localhost:9222"
+    BROWSER_API_TOKEN: str = ""  # общий секрет browser-сервиса (пусто — без auth)
 
     # Telegram
     TG_BOT_TOKEN: str = ""
