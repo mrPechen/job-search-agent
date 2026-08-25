@@ -98,9 +98,13 @@ class BrowserLoop:
             )
         except Exception as exc:
             logger.warning("VLM decision failed, retrying: %s", exc)
-            return await self._gateway.invoke_structured(
-                self._gateway.vision_model, messages, BrowserAction
-            )
+            try:
+                return await self._gateway.invoke_structured(
+                    self._gateway.vision_model, messages, BrowserAction
+                )
+            except Exception as exc2:
+                logger.warning("VLM decision failed again, giving up: %s", exc2)
+                return BrowserAction(tool="done", args={})
 
     async def _execute(
         self, user_id: int, action: BrowserAction, allowed_domains: list[str]
