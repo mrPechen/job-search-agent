@@ -88,7 +88,11 @@ class SitesRepository:
     async def add_domains(self, user_id: int, domains: list[str]) -> None:
         from src.database.models import UserSite
 
+        existing = set(await self.get_domains(user_id))
         async with self._session_factory() as session:
-            for domain in domains:
+            for domain in dict.fromkeys(domains):
+                if domain in existing:
+                    continue
                 session.add(UserSite(user_id=user_id, domain=domain))
+                existing.add(domain)
             await session.commit()
