@@ -81,3 +81,29 @@ async def test_applier_returns_missing_url_when_no_url():
     result = await applier(1, {"job": {}, "cover_letter": "x"})
     assert result.applied is False
     assert result.error == "missing url"
+
+
+class _RaisingLoop:
+    def __init__(self):
+        self.runs = 0
+
+    async def run(self, user_id, goal, result_schema, allowed_domains, start_url=None):
+        self.runs += 1
+        raise RuntimeError("site down")
+
+
+async def test_searcher_survives_site_failure():
+    searcher = UniversalSearcher(
+        executor=None, gateway=None, sites=FakeSites(["a.com"]), loop=_RaisingLoop()
+    )
+    result = await searcher(1, "python")
+    assert result == []
+
+
+async def test_applier_catches_loop_failure():
+    applier = UniversalApplier(
+        executor=None, gateway=None, sites=FakeSites(["a.com"]), loop=_RaisingLoop()
+    )
+    result = await applier(1, {"job": {"url": "https://a.com/1"}, "cover_letter": "x"})
+    assert result.applied is False
+    assert result.error == "site down"

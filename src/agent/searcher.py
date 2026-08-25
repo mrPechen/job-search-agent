@@ -25,13 +25,17 @@ class UniversalSearcher:
                 f"«{search_query}», получи список вакансий со страницы результатов "
                 "и собери для каждой: title, url, короткое описание."
             )
-            outcome: SearchOutcome = await self._loop.run(
-                user_id,
-                goal,
-                SearchOutcome,
-                allowed_domains=domains,
-                start_url=f"https://{domain}",
-            )
+            try:
+                outcome: SearchOutcome = await self._loop.run(
+                    user_id,
+                    goal,
+                    SearchOutcome,
+                    allowed_domains=domains,
+                    start_url=f"https://{domain}",
+                )
+            except Exception as exc:
+                logger.warning("Search on %s failed: %s", domain, exc)
+                continue
             if outcome.error:
                 logger.warning("Search on %s failed: %s", domain, outcome.error)
             for candidate in outcome.candidates:
@@ -67,6 +71,10 @@ class UniversalApplier:
             f"нажми её, впиши сопроводительное письмо: «{cover}», отправь и "
             "подтверди успех."
         )
-        return await self._loop.run(
-            user_id, goal, ApplyOutcome, allowed_domains=domains, start_url=url
-        )
+        try:
+            return await self._loop.run(
+                user_id, goal, ApplyOutcome, allowed_domains=domains, start_url=url
+            )
+        except Exception as exc:
+            logger.warning("Apply failed: %s", exc)
+            return ApplyOutcome(applied=False, error=str(exc))
