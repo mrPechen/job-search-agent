@@ -72,3 +72,12 @@ async def test_universal_applier_runs_apply_loop():
     assert "https://a.com/job/1" in goal
     assert start == "https://a.com/job/1"
     assert allowed == ["a.com"]
+
+
+async def test_applier_returns_missing_url_when_no_url():
+    applier = UniversalApplier(
+        executor=None, gateway=None, sites=FakeSites(["a.com"]), loop=FakeLoop([])
+    )
+    result = await applier(1, {"job": {}, "cover_letter": "x"})
+    assert result.applied is False
+    assert result.error == "missing url"
