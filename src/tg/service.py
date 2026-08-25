@@ -2,6 +2,8 @@ import re
 
 from langgraph.types import Command
 
+from src.agent.sites import SitesRepository, parse_sites_message
+
 # Точные слова-подтверждения HITL-действия
 _APPROVE_WORDS = (
     "да",
@@ -30,9 +32,11 @@ def _has_keyword(lower: str, words: tuple[str, ...]) -> bool:
 class TgService:
     """Оркестрация диалога: сообщение пользователя → граф → текст ответа."""
 
-    def __init__(self, graph, session_factory) -> None:
+    def __init__(self, graph, session_factory, gateway=None, sites_repo=None) -> None:
         self._graph = graph
         self._session_factory = session_factory
+        self._gateway = gateway
+        self._sites = sites_repo or SitesRepository(session_factory)
 
     async def handle_message(self, telegram_id: str, text: str) -> str:
         """Обработать входящее сообщение и вернуть текст ответа.
@@ -42,6 +46,16 @@ class TgService:
         :return: текст ответа для отправки в Telegram
         """
         user_id = await self._get_or_create_user(telegram_id)
+
+        # Onboarding: без сайтов просим назвать площадки и не запускаем граф
+        domains = await self._sites.get_domains(user_id)
+        if not domains:
+            parsed = await parse_sites_message(self._gateway, text)
+            if parsed:
+                await self._sites.add_domains(user_id, parsed)
+                return f"Запомнил. Буду искать на: {', '.join(parsed)}."
+            return "На каких сайтах искать работу? Назови сайты через запятую."
+
         config = {"configurable": {"thread_id": f"tg-{telegram_id}"}}
 
         # Если граф приостановлен (ожидает HITL) — возобновляем с решением пользователя

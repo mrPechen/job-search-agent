@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from playwright.async_api import (
     Browser,
     BrowserContext,
@@ -17,7 +17,6 @@ from pydantic import BaseModel
 
 from config import settings
 from src.agent.guardrails import check_outgoing_message
-from src.browser.adapters import HhAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +53,41 @@ _EXTRACT_JS = """
 }
 """
 
+_CHAT_INPUT_SELECTORS = (
+    "textarea[data-qa='messenger-input'], textarea[data-qa='chat_input']"
+)
+_CHAT_SEND_SELECTORS = (
+    "button[data-qa='messenger-send'], button[data-qa='chat_send_button']"
+)
 
-def _is_allowed_url(url: str) -> bool:
-    """Проверить, что домен URL входит в whitelist (или является его поддоменом).
+
+def _normalize_host(raw: str) -> str | None:
+    """Привести запись whitelist к нижнему регистру без схемы/www/точки в конце."""
+    value = raw.strip().lower()
+    if "://" in value:
+        value = urlparse(value).hostname or ""
+    value = value.rstrip(".")
+    if "." not in value:
+        return None
+    return value
+
+
+def _is_allowed_url(url: str, allowed_domains: list[str] | None = None) -> bool:
+    """Проверить URL: схема http/https и домен в whitelist (или его поддомен).
 
     :param url: целевой URL
+    :param allowed_domains: список разрешённых доменов; None — статический whitelist
     :return: True, если навигация разрешена
     """
-    hostname = urlparse(url).hostname or ""
-    return any(hostname == d or hostname.endswith("." + d) for d in ALLOWED_DOMAINS)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname or ""
+    if allowed_domains is None:
+        domains = ALLOWED_DOMAINS
+    else:
+        domains = [h for h in (_normalize_host(d) for d in allowed_domains[:200]) if h]
+    return any(hostname == d or hostname.endswith("." + d) for d in domains)
 
 
 class NavigateRequest(BaseModel):
@@ -70,6 +95,14 @@ class NavigateRequest(BaseModel):
 
     user_id: int
     url: str
+    allowed_domains: list[str] | None = None
+
+
+class ScrollRequest(BaseModel):
+    """Тело запроса прокрутки страницы."""
+
+    user_id: int
+    delta: int = 800
 
 
 class UserRequest(BaseModel):
@@ -98,13 +131,6 @@ class MessageRequest(BaseModel):
 
     user_id: int
     text: str
-
-
-class SubmitRequest(BaseModel):
-    """Тело запроса отклика на вакансию с сопроводительным письмом."""
-
-    user_id: int
-    cover_letter: str = ""
 
 
 class BrowserManager:
@@ -246,6 +272,20 @@ class BrowserManager:
         page = await self.get_page(user_id)
         return await page.screenshot()
 
+    async def scroll(self, user_id: int, delta: int = 800) -> dict:
+        """Прокрутить страницу на delta пикселей вниз."""
+        await self._throttle(user_id)
+        page = await self.get_page(user_id)
+        await page.mouse.wheel(0, delta)
+        return {"ok": True}
+
+    async def back(self, user_id: int) -> dict:
+        """Вернуться на предыдущую страницу."""
+        await self._throttle(user_id)
+        page = await self.get_page(user_id)
+        await page.go_back()
+        return {"ok": True}
+
     async def click(self, user_id: int, selector: str) -> dict:
         """Кликнуть по элементу; вернуть ошибку, если селектор не найден.
 
@@ -280,7 +320,7 @@ class BrowserManager:
 
         # Поиск поля ввода: сначала селекторы hh.ru, затем универсальные
         input_selector: str | None = None
-        for candidate in (HhAdapter.CHAT_INPUT, "textarea", "[contenteditable]"):
+        for candidate in (_CHAT_INPUT_SELECTORS, "textarea", "[contenteditable]"):
             if await page.query_selector(candidate):
                 input_selector = candidate
                 break
@@ -290,47 +330,10 @@ class BrowserManager:
         await page.fill(input_selector, text)
 
         # Отправка: кнопка «Отправить», иначе Enter в поле ввода
-        if await page.query_selector(HhAdapter.CHAT_SEND):
-            await page.click(HhAdapter.CHAT_SEND)
+        if await page.query_selector(_CHAT_SEND_SELECTORS):
+            await page.click(_CHAT_SEND_SELECTORS)
         else:
             await page.press(input_selector, "Enter")
-        return {"ok": True}
-
-    async def submit_application(self, user_id: int, cover_letter: str = "") -> dict:
-        """Откликнуться на вакансию: кнопка отклика → письмо → подтверждение.
-
-        :param user_id: идентификатор пользователя
-        :param cover_letter: текст сопроводительного письма (может быть пустым)
-        :return: словарь с результатом операции
-        :raises LookupError: если кнопка отклика отсутствует на странице
-        """
-        await self._throttle(user_id)
-        page = await self.get_page(user_id)
-
-        # ШАГ 1: клик по кнопке отклика (первый подходящий селектор hh.ru)
-        if not await page.query_selector(HhAdapter.APPLY_BUTTON):
-            raise LookupError("Кнопка отклика не найдена")
-        await page.click(HhAdapter.APPLY_BUTTON)
-
-        # ШАГ 2: заполнить сопроводительное письмо, если на странице есть поле
-        if cover_letter:
-            cover_el = await page.query_selector(
-                "textarea[data-qa='cover-letter'], #cover-letter"
-            )
-            if cover_el is None:
-                # Фолбэк: первый видимый textarea на странице
-                for candidate in await page.query_selector_all("textarea"):
-                    if await candidate.is_visible():
-                        cover_el = candidate
-                        break
-            if cover_el is not None:
-                await cover_el.fill(cover_letter)
-
-        # ШАГ 3: подтвердить отправку, если есть кнопка подтверждения
-        submit_selector = "button[data-qa='submit-application'], #submit-application"
-        if await page.query_selector(submit_selector):
-            await page.click(submit_selector)
-
         return {"ok": True}
 
     async def close(self) -> None:
@@ -351,6 +354,7 @@ def build_browser_app(
     headless: bool | None = None,
     mode: str | None = None,
     cdp_url: str | None = None,
+    api_token: str | None = None,
 ) -> FastAPI:
     """Собрать FastAPI-приложение browser-сервиса.
 
@@ -359,6 +363,7 @@ def build_browser_app(
     :param headless: True — без окна браузера (сервер/CI), False — видимое окно
     :param mode: "persistent" (свой Chromium) или "cdp" (подключение к Chrome)
     :param cdp_url: адрес CDP Chrome (для mode="cdp")
+    :param api_token: общий секрет; None — из настроек (settings.BROWSER_API_TOKEN)
     :return: готовое FastAPI-приложение
     """
     manager = BrowserManager(
@@ -368,6 +373,14 @@ def build_browser_app(
         cdp_url=settings.BROWSER_CDP_URL if cdp_url is None else cdp_url,
     )
 
+    token = settings.BROWSER_API_TOKEN if api_token is None else api_token
+
+    async def _require_token(
+        x_browser_token: str | None = Header(default=None),
+    ) -> None:
+        if token and x_browser_token != token:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Контексты создаются лениво, поэтому на старте ничего запускать не нужно
@@ -376,7 +389,11 @@ def build_browser_app(
         await manager.close()
         logger.info("BrowserManager остановлен")
 
-    app = FastAPI(title="Browser Executor", lifespan=lifespan)
+    app = FastAPI(
+        title="Browser Executor",
+        lifespan=lifespan,
+        dependencies=[Depends(_require_token)],
+    )
     app.state.browser_manager = manager
 
     @app.get("/health")
@@ -385,7 +402,7 @@ def build_browser_app(
 
     @app.post("/navigate")
     async def navigate(req: NavigateRequest) -> dict:
-        if not _is_allowed_url(req.url):
+        if not _is_allowed_url(req.url, req.allowed_domains):
             raise HTTPException(status_code=403, detail=f"Домен не разрешён: {req.url}")
         return await manager.navigate(req.user_id, req.url)
 
@@ -397,6 +414,14 @@ def build_browser_app(
     async def screenshot(req: UserRequest) -> Response:
         data = await manager.screenshot(req.user_id)
         return Response(content=data, media_type="image/png")
+
+    @app.post("/scroll")
+    async def scroll(req: ScrollRequest) -> dict:
+        return await manager.scroll(req.user_id, req.delta)
+
+    @app.post("/back")
+    async def back(req: UserRequest) -> dict:
+        return await manager.back(req.user_id)
 
     @app.post("/click")
     async def click(req: ClickRequest) -> dict:
@@ -420,13 +445,6 @@ def build_browser_app(
             raise HTTPException(status_code=400, detail=reason)
         try:
             return await manager.send_message(req.user_id, req.text)
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-
-    @app.post("/submit")
-    async def submit(req: SubmitRequest) -> dict:
-        try:
-            return await manager.submit_application(req.user_id, req.cover_letter)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 

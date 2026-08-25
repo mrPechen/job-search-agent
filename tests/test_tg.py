@@ -83,13 +83,33 @@ def _fake_session_factory():
     return factory
 
 
+class FakeSitesRepo:
+    """Поддельный репозиторий сайтов: заданный список + фиксация добавлений."""
+
+    def __init__(self, domains):
+        self._domains = list(domains)
+        self.added = []
+
+    async def get_domains(self, user_id):
+        return self._domains
+
+    async def add_domains(self, user_id, domains):
+        self.added.extend(domains)
+        self._domains.extend(domains)
+
+
 def _build_service(
-    gateway: FakeGateway, searcher: FakeSearcher | None = None
+    gateway: FakeGateway,
+    searcher: FakeSearcher | None = None,
+    sites_repo: FakeSitesRepo | None = None,
 ) -> TgService:
     """Собрать TgService с фейками и in-memory чекпоинтером."""
     searcher = searcher or FakeSearcher([])
+    sites_repo = sites_repo if sites_repo is not None else FakeSitesRepo(["hh.ru"])
     graph = build_graph(gateway, searcher, checkpointer=MemorySaver())
-    return TgService(graph, _fake_session_factory())
+    return TgService(
+        graph, _fake_session_factory(), gateway=gateway, sites_repo=sites_repo
+    )
 
 
 async def test_chat_message_returns_reply():
@@ -136,3 +156,21 @@ async def test_confirm_resumes_and_reports():
     await service.handle_message("123", "найди работу")
     reply = await service.handle_message("123", "да")
     assert reply == "Откликнулся на 1 вакансий"
+
+
+async def test_onboarding_asks_for_sites_when_none():
+    """Нет сайтов: бот спрашивает, на каких сайтах искать, и не запускает граф."""
+    service = _build_service(FakeGateway(intent="chat"), sites_repo=FakeSitesRepo([]))
+    reply = await service.handle_message("123", "привет")
+    assert "На каких сайтах" in reply
+
+
+async def test_onboarding_saves_sites_from_message():
+    """Сообщение с доменами при отсутствии сайтов сохраняет их и подтверждает."""
+    sites_repo = FakeSitesRepo([])
+    service = _build_service(FakeGateway(intent="chat"), sites_repo=sites_repo)
+    reply = await service.handle_message("123", "ищи на hh.ru и habr.com")
+    assert "hh.ru" in reply
+    assert "habr.com" in reply
+    assert "hh.ru" in sites_repo.added
+    assert "habr.com" in sites_repo.added
