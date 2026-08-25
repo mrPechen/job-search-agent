@@ -74,16 +74,22 @@ async def test_loop_executes_actions_until_done():
 
 
 class _RaisingGateway:
-    vision_model = _FakeModel()
+    def __init__(self):
+        self.calls = 0
+        self.vision_model = _FakeModel()
 
     async def invoke_structured(self, model, messages, schema):
+        self.calls += 1
         raise RuntimeError("vlm down")
 
 
 async def test_loop_returns_empty_when_vlm_fails():
-    loop = BrowserLoop(FakeExecutor(), _RaisingGateway(), max_steps=5)
+    gateway = _RaisingGateway()
+    loop = BrowserLoop(FakeExecutor(), gateway, max_steps=5)
     outcome = await loop.run(1, "goal", SearchOutcome, allowed_domains=[])
     assert outcome.candidates == []
+    assert outcome.error == "vlm decision failed"
+    assert gateway.calls == 2
 
 
 async def test_loop_returns_empty_on_step_limit():

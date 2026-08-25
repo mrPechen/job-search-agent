@@ -21,6 +21,7 @@ class SearchOutcome(BaseModel):
     """Результат поиска: найденные вакансии."""
 
     candidates: list[dict] = Field(default_factory=list)
+    error: str = ""
 
 
 class ApplyOutcome(BaseModel):
@@ -28,6 +29,7 @@ class ApplyOutcome(BaseModel):
 
     applied: bool = False
     detail: str = ""
+    error: str = ""
 
 
 _SYSTEM_PROMPT = (
@@ -65,12 +67,18 @@ class BrowserLoop:
             page = await self._executor.extract(user_id)
             shot = await self._executor.screenshot(user_id)
             action = await self._decide(goal, page, shot)
+            if action is None:
+                return result_schema(error="vlm decision failed")
             if action.tool == "done":
-                return result_schema.model_validate(action.args)
+                try:
+                    return result_schema.model_validate(action.args)
+                except Exception as exc:
+                    logger.warning("Invalid done args: %s", exc)
+                    return result_schema(error="invalid result")
             await self._execute(user_id, action, allowed_domains)
-        return result_schema()
+        return result_schema(error="step limit exceeded")
 
-    async def _decide(self, goal: str, page: dict, shot: bytes) -> BrowserAction:
+    async def _decide(self, goal: str, page: dict, shot: bytes) -> BrowserAction | None:
         image = base64.b64encode(shot).decode()
         elements = page.get("elements", [])
         text = (page.get("text") or "")[:4000]
@@ -104,7 +112,7 @@ class BrowserLoop:
                 )
             except Exception as exc2:
                 logger.warning("VLM decision failed again, giving up: %s", exc2)
-                return BrowserAction(tool="done", args={})
+                return None
 
     async def _execute(
         self, user_id: int, action: BrowserAction, allowed_domains: list[str]
