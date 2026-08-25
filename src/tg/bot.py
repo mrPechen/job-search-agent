@@ -8,8 +8,9 @@ from aiogram.types import Message
 from config import settings
 from src.agent.graph import build_graph
 from src.agent.router import IntentRouter
+from src.agent.sites import SitesRepository
+from src.agent.searcher import UniversalApplier, UniversalSearcher
 from src.browser.executor import BrowserExecutor
-from src.browser.searcher import HhSearcher
 from src.core.audit import log_action
 from src.database.db_settings import SessionLocal
 from src.llm.gateway import LLMGateway
@@ -55,16 +56,20 @@ def build_tg_service() -> TgService:
 
     gateway = LLMGateway()
     browser = BrowserExecutor(settings.BROWSER_EXECUTOR_URL)
-    searcher = HhSearcher(browser)
+    sites_repo = SitesRepository(SessionLocal)
+    searcher = UniversalSearcher(
+        browser, gateway, sites_repo, profile_provider=_get_profile
+    )
+    applier = UniversalApplier(browser, gateway, sites_repo)
 
     async def _apply(user_id: int, decision: dict) -> None:
-        """Реально откликнуться через browser-сервис и записать в аудит.
-
-        :param user_id: внутренний id пользователя
-        :param decision: решение по вакансии (с cover_letter и job)
-        """
-        await browser.submit_application(user_id, decision.get("cover_letter", ""))
-        log_action(user_id, "apply", "executed", {"job": decision.get("job", {})})
+        outcome = await applier(user_id, decision)
+        log_action(
+            user_id,
+            "apply",
+            "executed" if outcome.applied else "failed",
+            {"job": decision.get("job", {})},
+        )
 
     graph = build_graph(
         gateway,
@@ -75,7 +80,7 @@ def build_tg_service() -> TgService:
         applier=_apply,
         profile_provider=_get_profile,
     )
-    return TgService(graph, SessionLocal)
+    return TgService(graph, SessionLocal, gateway=gateway, sites_repo=sites_repo)
 
 
 async def main() -> None:

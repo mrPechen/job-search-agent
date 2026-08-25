@@ -102,20 +102,6 @@ async def test_click_and_type_and_send(mock_site, browser_client):
     assert "Здравствуйте" in r.json()["text"]
 
 
-async def test_submit_application(mock_site, browser_client):
-    """Отклик с сопроводительным письмом: /submit заполняет и отправляет форму."""
-    await browser_client.post(
-        "/navigate", json={"user_id": 1, "url": f"{mock_site}/index.html"}
-    )
-    r = await browser_client.post(
-        "/submit", json={"user_id": 1, "cover_letter": "Готов приступить"}
-    )
-    assert r.status_code == 200
-
-    r = await browser_client.post("/extract", json={"user_id": 1})
-    assert "Готов приступить" in r.json()["text"]
-
-
 async def test_navigate_with_allowed_domains(mock_site, browser_client):
     r = await browser_client.post(
         "/navigate",

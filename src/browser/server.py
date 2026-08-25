@@ -17,7 +17,6 @@ from pydantic import BaseModel
 
 from config import settings
 from src.agent.guardrails import check_outgoing_message
-from src.browser.adapters import HhAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +52,13 @@ _EXTRACT_JS = """
   }));
 }
 """
+
+_CHAT_INPUT_SELECTORS = (
+    "textarea[data-qa='messenger-input'], textarea[data-qa='chat_input']"
+)
+_CHAT_SEND_SELECTORS = (
+    "button[data-qa='messenger-send'], button[data-qa='chat_send_button']"
+)
 
 
 def _normalize_host(raw: str) -> str | None:
@@ -125,13 +131,6 @@ class MessageRequest(BaseModel):
 
     user_id: int
     text: str
-
-
-class SubmitRequest(BaseModel):
-    """Тело запроса отклика на вакансию с сопроводительным письмом."""
-
-    user_id: int
-    cover_letter: str = ""
 
 
 class BrowserManager:
@@ -321,7 +320,7 @@ class BrowserManager:
 
         # Поиск поля ввода: сначала селекторы hh.ru, затем универсальные
         input_selector: str | None = None
-        for candidate in (HhAdapter.CHAT_INPUT, "textarea", "[contenteditable]"):
+        for candidate in (_CHAT_INPUT_SELECTORS, "textarea", "[contenteditable]"):
             if await page.query_selector(candidate):
                 input_selector = candidate
                 break
@@ -331,47 +330,10 @@ class BrowserManager:
         await page.fill(input_selector, text)
 
         # Отправка: кнопка «Отправить», иначе Enter в поле ввода
-        if await page.query_selector(HhAdapter.CHAT_SEND):
-            await page.click(HhAdapter.CHAT_SEND)
+        if await page.query_selector(_CHAT_SEND_SELECTORS):
+            await page.click(_CHAT_SEND_SELECTORS)
         else:
             await page.press(input_selector, "Enter")
-        return {"ok": True}
-
-    async def submit_application(self, user_id: int, cover_letter: str = "") -> dict:
-        """Откликнуться на вакансию: кнопка отклика → письмо → подтверждение.
-
-        :param user_id: идентификатор пользователя
-        :param cover_letter: текст сопроводительного письма (может быть пустым)
-        :return: словарь с результатом операции
-        :raises LookupError: если кнопка отклика отсутствует на странице
-        """
-        await self._throttle(user_id)
-        page = await self.get_page(user_id)
-
-        # ШАГ 1: клик по кнопке отклика (первый подходящий селектор hh.ru)
-        if not await page.query_selector(HhAdapter.APPLY_BUTTON):
-            raise LookupError("Кнопка отклика не найдена")
-        await page.click(HhAdapter.APPLY_BUTTON)
-
-        # ШАГ 2: заполнить сопроводительное письмо, если на странице есть поле
-        if cover_letter:
-            cover_el = await page.query_selector(
-                "textarea[data-qa='cover-letter'], #cover-letter"
-            )
-            if cover_el is None:
-                # Фолбэк: первый видимый textarea на странице
-                for candidate in await page.query_selector_all("textarea"):
-                    if await candidate.is_visible():
-                        cover_el = candidate
-                        break
-            if cover_el is not None:
-                await cover_el.fill(cover_letter)
-
-        # ШАГ 3: подтвердить отправку, если есть кнопка подтверждения
-        submit_selector = "button[data-qa='submit-application'], #submit-application"
-        if await page.query_selector(submit_selector):
-            await page.click(submit_selector)
-
         return {"ok": True}
 
     async def close(self) -> None:
@@ -483,13 +445,6 @@ def build_browser_app(
             raise HTTPException(status_code=400, detail=reason)
         try:
             return await manager.send_message(req.user_id, req.text)
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-
-    @app.post("/submit")
-    async def submit(req: SubmitRequest) -> dict:
-        try:
-            return await manager.submit_application(req.user_id, req.cover_letter)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
