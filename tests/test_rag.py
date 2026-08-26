@@ -130,3 +130,36 @@ async def test_profile_repository_upsert(pg_url):
     assert rows[0].skills == ["python", "sql"]
 
     await engine.dispose()
+
+
+async def test_resume_retriever_returns_chunk_texts(pg_url):
+    """Ретривер эмбеддит запрос и возвращает тексты ближайших чанков."""
+    from src.rag.retrieve import ResumeRetriever
+
+    engine = create_async_engine(pg_url)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        session.add(User(id=1, telegram_id="t1"))
+        await session.commit()
+
+    async with session_factory() as session:
+        await store_chunks(
+            session, 1, ["Python developer", "Sales manager"], [[1.0] * 768, [-1.0] * 768]
+        )
+        await session.commit()
+
+    class FakeEmbedder:
+        async def aembed_query(self, query: str) -> list[float]:
+            return [1.0] * 768
+
+    retriever = ResumeRetriever(session_factory, FakeEmbedder())
+    texts = await retriever(1, "python backend")
+
+    assert texts[0] == "Python developer"
+
+    await engine.dispose()
