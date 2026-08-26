@@ -115,15 +115,15 @@ async def test_profile_repository_upsert(pg_url):
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with session_factory() as session:
-        session.add(User(id=1, telegram_id="t1"))
+        session.add(User(id=2, telegram_id="t2"))
         await session.commit()
 
     repo = ProfileRepository(session_factory)
-    await repo.save(1, ProfileData(skills=["python"], desired_role="dev"))
-    await repo.save(1, ProfileData(skills=["python", "sql"], desired_role="dev"))
+    await repo.save(2, ProfileData(skills=["python"], desired_role="dev"))
+    await repo.save(2, ProfileData(skills=["python", "sql"], desired_role="dev"))
 
     async with session_factory() as session:
-        result = await session.execute(select(Profile).where(Profile.user_id == 1))
+        result = await session.execute(select(Profile).where(Profile.user_id == 2))
         rows = result.scalars().all()
 
     assert len(rows) == 1
@@ -144,12 +144,12 @@ async def test_resume_retriever_returns_chunk_texts(pg_url):
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with session_factory() as session:
-        session.add(User(id=1, telegram_id="t1"))
+        session.add(User(id=3, telegram_id="t3"))
         await session.commit()
 
     async with session_factory() as session:
         await store_chunks(
-            session, 1, ["Python developer", "Sales manager"], [[1.0] * 768, [-1.0] * 768]
+            session, 3, ["Python developer", "Sales manager"], [[1.0] * 768, [-1.0] * 768]
         )
         await session.commit()
 
@@ -158,7 +158,7 @@ async def test_resume_retriever_returns_chunk_texts(pg_url):
             return [1.0] * 768
 
     retriever = ResumeRetriever(session_factory, FakeEmbedder())
-    texts = await retriever(1, "python backend")
+    texts = await retriever(3, "python backend")
 
     assert texts[0] == "Python developer"
 
