@@ -1,6 +1,7 @@
 from functools import cached_property
 from typing import Any
 
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 from config import settings
@@ -8,7 +9,7 @@ from src.llm.providers import build_text_model, build_vision_model
 
 
 class LLMGateway:
-    """Единая точка доступа к текстовым и vision-моделям.
+    """Единая точка доступа к текстовым, vision-моделям и эмбеддингам.
 
     Инкапсулирует выбор провайдера и предоставляет агентам единый
     интерфейс для генерации текста и структурированных ответов.
@@ -38,7 +39,7 @@ class LLMGateway:
         )
 
     @cached_property
-    def embedder(self):
+    def embedder(self) -> Embeddings:
         """Модель эмбеддингов для RAG (провайдер совпадает с LLM_PROVIDER)."""
         from src.rag.ingest import build_embeddings
 

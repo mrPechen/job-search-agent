@@ -1,5 +1,6 @@
 import pytest
 
+from config import settings
 from src.llm.providers import build_text_model, build_vision_model
 
 
@@ -20,3 +21,4 @@ def test_gateway_exposes_embedder():
     gateway = LLMGateway()
     embedder = gateway.embedder
     assert embedder is not None
+    assert embedder.model == settings.EMBEDDING_MODEL

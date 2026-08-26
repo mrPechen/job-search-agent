@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from config import settings
 from src.database.db_settings import Base
 from src.database.models import User
 from src.rag.ingest import build_embeddings, chunk_by_sections, extract_cv_text
@@ -82,8 +83,8 @@ async def test_store_and_retrieve_relevant(pg_url):
         await session.commit()
 
     # Чанк A близок к запросу, чанк B — противоположен
-    emb_a = [1.0] * 768
-    emb_b = [-1.0] * 768
+    emb_a = [1.0] * settings.EMBEDDING_DIM
+    emb_b = [-1.0] * settings.EMBEDDING_DIM
     async with session_factory() as session:
         count = await store_chunks(
             session, 1, ["Python developer", "Sales manager"], [emb_a, emb_b]
@@ -92,7 +93,9 @@ async def test_store_and_retrieve_relevant(pg_url):
         assert count == 2
 
     async with session_factory() as session:
-        result = await retrieve_relevant(session, 1, [1.0] * 768, top_k=2)
+        result = await retrieve_relevant(
+            session, 1, [1.0] * settings.EMBEDDING_DIM, top_k=2
+        )
         assert len(result) == 2
         assert result[0].chunk_text == "Python developer"
 
@@ -149,13 +152,16 @@ async def test_resume_retriever_returns_chunk_texts(pg_url):
 
     async with session_factory() as session:
         await store_chunks(
-            session, 3, ["Python developer", "Sales manager"], [[1.0] * 768, [-1.0] * 768]
+            session,
+            3,
+            ["Python developer", "Sales manager"],
+            [[1.0] * settings.EMBEDDING_DIM, [-1.0] * settings.EMBEDDING_DIM],
         )
         await session.commit()
 
     class FakeEmbedder:
         async def aembed_query(self, query: str) -> list[float]:
-            return [1.0] * 768
+            return [1.0] * settings.EMBEDDING_DIM
 
     retriever = ResumeRetriever(session_factory, FakeEmbedder())
     texts = await retriever(3, "python backend")
