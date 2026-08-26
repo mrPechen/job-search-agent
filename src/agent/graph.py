@@ -6,7 +6,6 @@ from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from src.agent.policy import requires_human_approval
-from src.agent.router import IntentRouter
 from src.agent.state import AgentState
 from src.core.audit import log_action
 from src.llm.gateway import LLMGateway
@@ -24,15 +23,21 @@ APPLY_THRESHOLD = 0.6
 
 
 async def _score_candidate(
-    gateway: LLMGateway, candidate: dict, profile: dict
+    gateway: LLMGateway, candidate: dict, profile: dict, chunks: list[str] | None = None
 ) -> CandidateScore:
     """Оценить соответствие вакансии профилю через LLM (структурированный вывод).
 
     :param gateway: единая точка доступа к LLM
     :param candidate: словарь с данными вакансии
     :param profile: профиль соискателя (навыки/опыт) для сопоставления
+    :param chunks: релевантные фрагменты резюме (RAG), подмешиваемые в промпт
     :return: оценка соответствия (score + reason)
     """
+    chunks = chunks or []
+    context = f"Профиль: {profile}"
+    if chunks:
+        fragments = "\n".join(f"- {chunk}" for chunk in chunks)
+        context += f"\nРелевантные фрагменты резюме:\n{fragments}"
     return await gateway.invoke_structured(
         gateway.text_model,
         [
@@ -41,38 +46,48 @@ async def _score_candidate(
                 "Оцени релевантность вакансии профилю соискателя от 0 до 1. "
                 "score — число, reason — краткое обоснование.",
             ),
-            ("human", f"Профиль: {profile}\nВакансия: {candidate}"),
+            ("human", f"{context}\nВакансия: {candidate}"),
         ],
         CandidateScore,
     )
 
 
+async def _retrieve_chunks(
+    user_id: int,
+    candidate: dict,
+    retriever: Callable[[int, str], Awaitable[list[str]]] | None,
+) -> list[str]:
+    """Извлечь релевантные фрагменты резюме; при сбое RAG — пустой список."""
+    if retriever is None:
+        return []
+    query = f"{candidate.get('title', '')} {candidate.get('description', '')}".strip()
+    if not query:
+        return []
+    try:
+        return await retriever(user_id, query)
+    except Exception:
+        # RAG недоступен (нет эмбеддингов) — скорим без фрагментов
+        return []
+
+
 def build_graph(
     gateway: LLMGateway,
     searcher: Callable[[int, str], Awaitable[list[dict]]],
-    router: IntentRouter | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
-    get_stats: Callable[[int], Awaitable[dict]] | None = None,
     applier: Callable[[int, dict], Awaitable[None]] | None = None,
     profile_provider: Callable[[int], Awaitable[dict]] | None = None,
+    retriever: Callable[[int, str], Awaitable[list[str]]] | None = None,
 ):
-    """Собрать граф агента с внедрёнными зависимостями.
+    """Собрать граф поиска: search → match → decision → apply → report + HITL.
 
-    :param gateway: LLMGateway (для классификации, скоринга, чата)
-    :param searcher: async callable(user_id, query) -> list[dict] — поиск вакансий
-    :param router: IntentRouter (по умолчанию создаётся из gateway)
-    :param checkpointer: checkpointer LangGraph (для HITL; обязателен в тестах)
-    :param get_stats: async callable(user_id) -> dict — статистика из БД
-    :param applier: async callable(user_id, decision) — реальный отклик (side-effect)
+    :param gateway: LLMGateway (скоринг, письма)
+    :param searcher: async callable(user_id, query) -> list[dict]
+    :param checkpointer: checkpointer LangGraph (для HITL)
+    :param applier: async callable(user_id, decision) — реальный отклик
     :param profile_provider: async callable(user_id) -> dict — профиль соискателя
+    :param retriever: async callable(user_id, query) -> list[str] — фрагменты резюме
     :return: скомпилированный граф
     """
-    router = router or IntentRouter(gateway)
-
-    async def router_node(state: AgentState) -> dict:
-        """Классифицировать намерение пользователя."""
-        intent = await router.classify(state.get("user_message", ""))
-        return {"intent": intent.intent}
 
     async def search_node(state: AgentState) -> dict:
         """Найти вакансии через внедрённый searcher по запросу пользователя."""
@@ -81,11 +96,12 @@ def build_graph(
         return {"candidates": candidates}
 
     async def match_node(state: AgentState) -> dict:
-        """Оценить каждую вакансию через LLM-скоринг с учётом профиля."""
+        """Оценить каждую вакансию через LLM-скоринг с учётом профиля и RAG."""
         profile = await profile_provider(state["user_id"]) if profile_provider else {}
         decisions = []
         for c in state.get("candidates", []):
-            scored = await _score_candidate(gateway, c, profile)
+            chunks = await _retrieve_chunks(state["user_id"], c, retriever)
+            scored = await _score_candidate(gateway, c, profile, chunks)
             decisions.append({"job": c, "score": scored.score, "reason": scored.reason})
         return {"decisions": decisions}
 
@@ -150,65 +166,18 @@ def build_graph(
         reply = f"Откликнулся на {applied_count} вакансий"
         return {"report": report, "reply": reply}
 
-    async def stats_node(state: AgentState) -> dict:
-        """Вернуть накопленную статистику пользователя из БД."""
-        if get_stats is None:
-            reply = "Статистика недоступна"
-            return {"report": {"applied_count": 0, "replied_count": 0}, "reply": reply}
-        stats = await get_stats(state["user_id"])
-        reply = (
-            f"Всего откликов: {stats.get('applied_count', 0)}, "
-            f"общений с работодателями: {stats.get('replied_count', 0)}"
-        )
-        return {"report": stats, "reply": reply}
-
-    async def chat_node(state: AgentState) -> dict:
-        """Ответить пользователю в свободном режиме чата."""
-        reply_msg = await gateway.text_model.ainvoke(
-            [
-                (
-                    "system",
-                    "Ты — дружелюбный ассистент по поиску работы. "
-                    "Отвечай кратко на русском.",
-                ),
-                ("human", state.get("user_message", "")),
-            ]
-        )
-        return {"reply": reply_msg.content}
-
-    def route_by_intent(state: AgentState) -> str:
-        """Выбрать следующую ветку графа по намерению."""
-        intent = state.get("intent", "chat")
-        if intent == "search_job":
-            return "search"
-        if intent == "stats":
-            return "stats"
-        if intent == "confirm":
-            return "chat"  # подтверждения обрабатываются через resume HITL
-        return "chat"
-
     graph = StateGraph(AgentState)
-    graph.add_node("router", router_node)
     graph.add_node("search", search_node)
     graph.add_node("match", match_node)
     graph.add_node("decision", decision_node)
     graph.add_node("apply", apply_node)
     graph.add_node("report", report_node)
-    graph.add_node("stats", stats_node)
-    graph.add_node("chat", chat_node)
 
-    graph.add_edge(START, "router")
-    graph.add_conditional_edges(
-        "router",
-        route_by_intent,
-        {"search": "search", "stats": "stats", "chat": "chat"},
-    )
+    graph.add_edge(START, "search")
     graph.add_edge("search", "match")
     graph.add_edge("match", "decision")
     graph.add_edge("decision", "apply")
     graph.add_edge("apply", "report")
     graph.add_edge("report", END)
-    graph.add_edge("stats", END)
-    graph.add_edge("chat", END)
 
     return graph.compile(checkpointer=checkpointer)
