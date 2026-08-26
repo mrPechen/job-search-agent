@@ -82,8 +82,8 @@ async def test_store_and_retrieve_relevant(pg_url):
         await session.commit()
 
     # Чанк A близок к запросу, чанк B — противоположен
-    emb_a = [1.0] * 1536
-    emb_b = [-1.0] * 1536
+    emb_a = [1.0] * 768
+    emb_b = [-1.0] * 768
     async with session_factory() as session:
         count = await store_chunks(
             session, 1, ["Python developer", "Sales manager"], [emb_a, emb_b]
@@ -92,7 +92,7 @@ async def test_store_and_retrieve_relevant(pg_url):
         assert count == 2
 
     async with session_factory() as session:
-        result = await retrieve_relevant(session, 1, [1.0] * 1536, top_k=2)
+        result = await retrieve_relevant(session, 1, [1.0] * 768, top_k=2)
         assert len(result) == 2
         assert result[0].chunk_text == "Python developer"
 
