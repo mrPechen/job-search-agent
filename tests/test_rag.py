@@ -97,3 +97,36 @@ async def test_store_and_retrieve_relevant(pg_url):
         assert result[0].chunk_text == "Python developer"
 
     await engine.dispose()
+
+
+async def test_profile_repository_upsert(pg_url):
+    """Сохранение профиля: вторая запись обновляет существующую, не создавая дубль."""
+    from sqlalchemy import select
+
+    from src.database.models import Profile
+    from src.rag.profile_repo import ProfileRepository
+    from src.rag.schemas import ProfileData
+
+    engine = create_async_engine(pg_url)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        session.add(User(id=1, telegram_id="t1"))
+        await session.commit()
+
+    repo = ProfileRepository(session_factory)
+    await repo.save(1, ProfileData(skills=["python"], desired_role="dev"))
+    await repo.save(1, ProfileData(skills=["python", "sql"], desired_role="dev"))
+
+    async with session_factory() as session:
+        result = await session.execute(select(Profile).where(Profile.user_id == 1))
+        rows = result.scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].skills == ["python", "sql"]
+
+    await engine.dispose()
