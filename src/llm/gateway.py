@@ -37,6 +37,18 @@ class LLMGateway:
             settings.OLLAMA_BASE_URL,
         )
 
+    @cached_property
+    def embedder(self):
+        """Модель эмбеддингов для RAG (провайдер совпадает с LLM_PROVIDER)."""
+        from src.rag.ingest import build_embeddings
+
+        return build_embeddings(
+            settings.LLM_PROVIDER,
+            settings.EMBEDDING_MODEL,
+            settings.OPENAI_API_KEY,
+            settings.OLLAMA_BASE_URL,
+        )
+
     async def invoke_structured(
         self, model: BaseChatModel, messages: list, schema: type
     ) -> Any:
