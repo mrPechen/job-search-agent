@@ -18,7 +18,7 @@ class CapabilityChoice(BaseModel):
 
 # Ключевые слова для детерминированного fallback (по границе слова)
 _KEYWORDS: dict[str, tuple[str, ...]] = {
-    "upload_resume": ("резюме", "резюм", "cv"),
+    "upload_resume": ("резюме", "cv"),
     "stats": ("стат", "сколько", "итог", "результат"),
     "search_job": ("работ", "ваканс", "ищ", "поиск", "найти", "собесед"),
 }
@@ -72,7 +72,7 @@ class CapabilityRouter:
             'которого нет в списке, — верни "none".'
         )
 
-    def _keyword_classify(self, message: str) -> str | None:
+    def _keyword_classify(self, message: str) -> str:
         lower = message.lower()
         for cap in self._capabilities:
             if cap.key == "chat":
