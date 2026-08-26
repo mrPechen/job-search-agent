@@ -6,3 +6,6 @@ __pycache__/
 .uv/
 *.egg-info/
 .browser_profiles/
+
+# git worktrees
+.worktrees/
