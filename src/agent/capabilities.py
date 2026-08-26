@@ -60,9 +60,7 @@ class CapabilityRouter:
             return self._keyword_classify(message)
 
     def _build_prompt(self) -> str:
-        lines = "\n".join(
-            f"- {c.key} — {c.description}" for c in self._capabilities
-        )
+        lines = "\n".join(f"- {c.key} — {c.description}" for c in self._capabilities)
         return (
             "Ты — маршрутизатор личного агента поиска работы. "
             "Доступные возможности:\n"
