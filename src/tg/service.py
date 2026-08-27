@@ -230,5 +230,10 @@ class TgService:
             pending = interrupts[0].value
             job = pending.get("job", {})
             title = job.get("title", "вакансию")
-            return f"Подтвердить отклик на «{title}»? Ответь «да» или «нет»."
+            resume = pending.get("resume", "")
+            resume_txt = f" (резюме: «{resume}»)" if resume else ""
+            return (
+                f"Подтвердить отклик на «{title}»{resume_txt}? "
+                "Ответь «да» или «нет»."
+            )
         return result.get("reply", "Готово")

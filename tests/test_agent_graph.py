@@ -1,14 +1,15 @@
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from src.agent.graph import CandidateScore, build_graph
+from src.agent.graph import CandidateScore, ResumeChoice, build_graph
 
 
 class FakeGateway:
     """Поддельный gateway: возвращает предзаданный скоринг, фиксирует вызовы."""
 
-    def __init__(self, score: float = 0.1) -> None:
+    def __init__(self, score: float = 0.1, resume: str = "Python разработчик") -> None:
         self.score = score
+        self.resume = resume
         self.text_model = _FakeModel()
         self.calls: list[tuple[str, list]] = []
 
@@ -17,6 +18,8 @@ class FakeGateway:
         self.calls.append((name, messages))
         if name == "CandidateScore":
             return CandidateScore(score=self.score, reason="ok")
+        if name == "ResumeChoice":
+            return ResumeChoice(resume=self.resume)
         raise ValueError(f"unexpected schema {name}")
 
 
@@ -137,3 +140,53 @@ async def test_match_uses_rag_chunks():
         assert "Навыки: FastAPI" in human
         return
     raise AssertionError("CandidateScore не вызывался")
+
+
+async def test_decision_uses_full_vacancy_text():
+    """Полный текст вакансии попадает в промпт сопроводительного письма."""
+    reads: list[str] = []
+
+    async def vacancy_reader(user_id: int, url: str) -> str:
+        reads.append(url)
+        return "Требование: указать ожидаемую зарплату"
+
+    captured: dict[str, list] = {}
+
+    class _RecordingModel:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return type("Msg", (), {"content": "письмо"})()
+
+    gateway = FakeGateway(score=0.9)
+    gateway.text_model = _RecordingModel()
+
+    graph = _build(
+        gateway,
+        FakeSearcher([{"title": "Dev", "url": "https://a.com/1"}]),
+        vacancy_reader=vacancy_reader,
+    )
+    await graph.ainvoke(
+        {"user_id": 1, "user_message": "найди работу"},
+        {"configurable": {"thread_id": "t7"}},
+    )
+
+    assert reads == ["https://a.com/1"]
+    human = [m[1] for m in captured["messages"] if m[0] == "human"][0]
+    assert "Требование: указать ожидаемую зарплату" in human
+
+
+async def test_decision_picks_resume():
+    """Выбранное резюме попадает в решение и в HITL-подтверждение."""
+    gateway = FakeGateway(score=0.9, resume="ML инженер")
+    graph = _build(
+        gateway,
+        FakeSearcher([{"title": "ML Engineer"}]),
+        resumes={"ML инженер": "ML/LLM", "Python разработчик": "backend"},
+    )
+    result = await graph.ainvoke(
+        {"user_id": 1, "user_message": "найди работу"},
+        {"configurable": {"thread_id": "t8"}},
+    )
+
+    pending = result["__interrupt__"][0].value
+    assert pending["resume"] == "ML инженер"

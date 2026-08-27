@@ -81,6 +81,8 @@ def build_tg_service() -> TgService:
         applier=_apply,
         profile_provider=_get_profile,
         retriever=retriever,
+        vacancy_reader=searcher.read_vacancy,
+        resumes=settings.RESUMES,
     )
     return TgService(
         graph,
@@ -94,6 +96,11 @@ def build_tg_service() -> TgService:
 
 async def main() -> None:
     """Точка входа: поднять бота и запустить поллинг сообщений."""
+    # INFO-логи агента (этапы поиска/скоринга/действия VLM) — иначе они не видны,
+    # т.к. этот процесс запускается без uvicorn и без настройки логирования.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     bot = Bot(token=settings.TG_BOT_TOKEN)
     dp = Dispatcher()
     service = build_tg_service()

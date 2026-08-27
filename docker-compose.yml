@@ -22,6 +22,7 @@ services:
     environment:
       DB_HOST: postgres
       REDIS_URL: redis://redis:6379
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     ports:
       - "8000:8000"
     depends_on:
@@ -47,6 +48,7 @@ services:
       DB_HOST: postgres
       REDIS_URL: redis://redis:6379
       BROWSER_EXECUTOR_URL: http://browser:8010
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     depends_on:
       - postgres
       - browser
@@ -58,6 +60,7 @@ services:
     environment:
       DB_HOST: postgres
       REDIS_URL: redis://redis:6379
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     depends_on:
       - postgres
       - redis

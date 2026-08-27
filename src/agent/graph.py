@@ -1,3 +1,4 @@
+import logging
 from typing import Awaitable, Callable
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -10,12 +11,20 @@ from src.agent.state import AgentState
 from src.core.audit import log_action
 from src.llm.gateway import LLMGateway
 
+logger = logging.getLogger(__name__)
+
 
 class CandidateScore(BaseModel):
     """Оценка соответствия вакансии профилю пользователя."""
 
     score: float  # 0..1
     reason: str
+
+
+class ResumeChoice(BaseModel):
+    """Выбранное резюме для отклика (имя из списка RESUMES)."""
+
+    resume: str
 
 
 # Порог: вакансии с оценкой выше идут в отклик
@@ -70,6 +79,50 @@ async def _retrieve_chunks(
         return []
 
 
+async def _pick_resume(
+    gateway: LLMGateway,
+    resumes: dict[str, str],
+    job: dict,
+    full_text: str,
+) -> str:
+    """Выбрать резюме из списка, наиболее подходящее вакансии.
+
+    :param gateway: единая точка доступа к LLM
+    :param resumes: словарь имя резюме -> описание
+    :param job: данные вакансии (короткое описание)
+    :param full_text: полный текст вакансии
+    :return: имя выбранного резюме (или "" если список пуст)
+    """
+    if not resumes:
+        return ""
+    if len(resumes) == 1:
+        return next(iter(resumes))
+    options = "\n".join(f"- {name}: {desc}" for name, desc in resumes.items())
+    try:
+        choice = await gateway.invoke_structured(
+            gateway.text_model,
+            [
+                (
+                    "system",
+                    "Выбери из списка резюме то, которое лучше всего подходит "
+                    "для вакансии. Верни поле resume с точным именем из списка.",
+                ),
+                (
+                    "human",
+                    f"Доступные резюме:\n{options}\n\nВакансия: {job}\n"
+                    f"Описание вакансии:\n{full_text}",
+                ),
+            ],
+            ResumeChoice,
+        )
+        if choice.resume in resumes:
+            return choice.resume
+        return next(iter(resumes))
+    except Exception as exc:  # noqa: BLE001 - при сбое берём первое резюме
+        logger.warning("Выбор резюме не удался: %s", exc)
+        return next(iter(resumes))
+
+
 def build_graph(
     gateway: LLMGateway,
     searcher: Callable[[int, str], Awaitable[list[dict]]],
@@ -77,6 +130,8 @@ def build_graph(
     applier: Callable[[int, dict], Awaitable[None]] | None = None,
     profile_provider: Callable[[int], Awaitable[dict]] | None = None,
     retriever: Callable[[int, str], Awaitable[list[str]]] | None = None,
+    vacancy_reader: Callable[[int, str], Awaitable[str]] | None = None,
+    resumes: dict[str, str] | None = None,
 ):
     """Собрать граф поиска: search → match → decision → apply → report + HITL.
 
@@ -86,13 +141,17 @@ def build_graph(
     :param applier: async callable(user_id, decision) — реальный отклик
     :param profile_provider: async callable(user_id) -> dict — профиль соискателя
     :param retriever: async callable(user_id, query) -> list[str] — фрагменты резюме
+    :param vacancy_reader: async callable(user_id, url) -> str — полный текст вакансии
+    :param resumes: словарь имя резюме -> описание (для выбора под вакансию)
     :return: скомпилированный граф
     """
 
     async def search_node(state: AgentState) -> dict:
         """Найти вакансии через внедрённый searcher по запросу пользователя."""
         query = state.get("user_message", "")
+        logger.info("Поиск вакансий: query=%r", query)
         candidates = await searcher(state["user_id"], query)
+        logger.info("Найдено вакансий: %s", len(candidates))
         return {"candidates": candidates}
 
     async def match_node(state: AgentState) -> dict:
@@ -102,6 +161,12 @@ def build_graph(
         for c in state.get("candidates", []):
             chunks = await _retrieve_chunks(state["user_id"], c, retriever)
             scored = await _score_candidate(gateway, c, profile, chunks)
+            logger.info(
+                "Скоринг вакансии «%s»: %.2f (%s)",
+                c.get("title", "?"),
+                scored.score,
+                scored.reason,
+            )
             decisions.append({"job": c, "score": scored.score, "reason": scored.reason})
         return {"decisions": decisions}
 
@@ -110,17 +175,42 @@ def build_graph(
         final = []
         for d in state.get("decisions", []):
             decision = "apply" if d["score"] >= APPLY_THRESHOLD else "skip"
+            logger.info(
+                "Решение по «%s»: %s (score %.2f)",
+                d.get("job", {}).get("title", "?"),
+                decision,
+                d["score"],
+            )
             d["decision"] = decision
             if decision == "apply":
+                # Полный текст вакансии: учитываем требования работодателя к письму
+                url = d.get("job", {}).get("url", "")
+                full_text = ""
+                if vacancy_reader is not None and url:
+                    try:
+                        full_text = await vacancy_reader(state["user_id"], url)
+                    except Exception as exc:  # noqa: BLE001 - письмо пишем и без текста
+                        logger.warning("Чтение вакансии %s не удалось: %s", url, exc)
+                d["full_text"] = full_text
+                # Выбор резюме под вакансию (если задано несколько)
+                d["resume"] = await _pick_resume(
+                    gateway, resumes or {}, d.get("job", {}), full_text
+                )
                 # Черновик сопроводительного письма под конкретную вакансию
                 msg = await gateway.text_model.ainvoke(
                     [
                         (
                             "system",
                             "Ты пишешь краткое сопроводительное письмо на русском "
-                            "(3-5 предложений) под конкретную вакансию.",
+                            "(3-5 предложений) под конкретную вакансию. Если в "
+                            "описании вакансии есть конкретные требования к письму "
+                            "(например, указать что-то определённое) — выполни их.",
                         ),
-                        ("human", f"Вакансия: {d['job']}"),
+                        (
+                            "human",
+                            f"Вакансия: {d['job']}\n"
+                            f"Полное описание вакансии:\n{full_text}",
+                        ),
                     ]
                 )
                 d["cover_letter"] = msg.content
@@ -142,6 +232,7 @@ def build_graph(
                         "action": "apply",
                         "job": d.get("job"),
                         "cover_letter": d.get("cover_letter", ""),
+                        "resume": d.get("resume", ""),
                     }
                 )
                 # Аудит: что агент хотел сделать и какое решение принято

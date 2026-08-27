@@ -3,6 +3,7 @@ from typing import Any
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
 
 from config import settings
 from src.llm.providers import build_text_model, build_vision_model
@@ -40,11 +41,11 @@ class LLMGateway:
 
     @cached_property
     def embedder(self) -> Embeddings:
-        """Модель эмбеддингов для RAG (провайдер совпадает с LLM_PROVIDER)."""
+        """Модель эмбеддингов для RAG (провайдер задаётся EMBEDDING_PROVIDER)."""
         from src.rag.ingest import build_embeddings
 
         return build_embeddings(
-            settings.LLM_PROVIDER,
+            settings.EMBEDDING_PROVIDER,
             settings.EMBEDDING_MODEL,
             settings.OPENAI_API_KEY,
             settings.OLLAMA_BASE_URL,
@@ -55,10 +56,24 @@ class LLMGateway:
     ) -> Any:
         """Вызвать модель с Pydantic-валидацией вывода.
 
+        Метод структурированного вывода зависит от модели: текстовая использует
+        function_calling, vision — json_mode (thinking-режим DeepSeek не умеет tools).
+
         :param model: целевая модель
         :param messages: список сообщений для модели
         :param schema: Pydantic-класс для структурированного вывода
         :return: экземпляр schema, валидированный Pydantic
         """
-        structured = model.with_structured_output(schema)
+        method = (
+            settings.LLM_VISION_STRUCTURED_METHOD
+            if model is self.vision_model
+            else settings.LLM_STRUCTURED_METHOD
+        )
+        if method == "json_mode":
+            # DeepSeek требует слово "json" в промпте для response_format=json_object
+            messages = [
+                SystemMessage(content="Отвечай только валидным JSON, без пояснений."),
+                *messages,
+            ]
+        structured = model.with_structured_output(schema, method=method)
         return await structured.ainvoke(messages)

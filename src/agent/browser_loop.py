@@ -34,10 +34,18 @@ class ApplyOutcome(BaseModel):
 
 _SYSTEM_PROMPT = (
     "Ты управляешь браузером для поиска работы. На каждом шаге получаешь "
-    "скриншот страницы и список интерактивных элементов с CSS-селекторами. "
-    "Верни одно действие: tool из [navigate, click, type, scroll, back, done]. "
-    "Для click/type используй selector ТОЛЬКО из списка элементов. "
-    "Когда цель достигнута, верни tool=done и результат в args."
+    "скриншот страницы, текст и список интерактивных элементов с CSS-селекторами. "
+    'Верни СТРОГО один JSON-объект с полями "tool" и "args": '
+    '{"tool": "<одно из: navigate, click, type, scroll, back, done>", "args": {...}}.\n'
+    "Значения args по типу tool:\n"
+    '- navigate: {"url": "https://..."}\n'
+    '- click: {"selector": "<селектор из списка>"}\n'
+    '- type: {"selector": "<селектор из списка>", "text": "..."}\n'
+    '- scroll: {"delta": 800}\n'
+    "- back: {}\n"
+    '- done: {"candidates": [...]} — когда цель достигнута (см. цель ниже).\n'
+    "Для click/type бери selector ТОЛЬКО из списка элементов страницы. "
+    "Когда цель достигнута, верни tool=done и собранный результат в args."
 )
 
 
@@ -63,12 +71,19 @@ class BrowserLoop:
             await self._executor.navigate(
                 user_id, start_url, allowed_domains=allowed_domains
             )
-        for _ in range(self._max_steps):
+        for step in range(self._max_steps):
             page = await self._executor.extract(user_id)
             shot = await self._executor.screenshot(user_id)
             action = await self._decide(goal, page, shot)
             if action is None:
                 return result_schema(error="vlm decision failed")
+            logger.info(
+                "Шаг %s/%s: VLM выбрала %s %s",
+                step + 1,
+                self._max_steps,
+                action.tool,
+                action.args,
+            )
             if action.tool == "done":
                 try:
                     return result_schema.model_validate(action.args)

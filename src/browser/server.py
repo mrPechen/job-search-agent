@@ -2,10 +2,12 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from PIL import Image
 from playwright.async_api import (
     Browser,
     BrowserContext,
@@ -25,6 +27,9 @@ ALLOWED_DOMAINS = {"hh.ru", "www.hh.ru", "localhost", "127.0.0.1"}
 
 # Минимальный интервал между действиями одного пользователя (анти-бан)
 MIN_ACTION_INTERVAL = 1.5
+
+# Максимальная ширина скриншота для VLM (меньше пикселей — быстрее инференс)
+_SCREENSHOT_MAX_WIDTH = 1280
 
 # JS для извлечения видимого текста страницы
 _BODY_TEXT_JS = "() => (document.body ? document.body.innerText : '')"
@@ -49,6 +54,7 @@ _EXTRACT_JS = """
     text: (el.innerText || el.value || el.getAttribute("aria-label") || "").trim(),
     selector: buildSelector(el),
     type: el.getAttribute("type") || "",
+    href: el.getAttribute("href") || "",
   }));
 }
 """
@@ -268,9 +274,20 @@ class BrowserManager:
         }
 
     async def screenshot(self, user_id: int) -> bytes:
-        """Сделать скриншот текущей страницы (PNG)."""
+        """Сделать скриншот страницы и уменьшить его для vision-модели.
+
+        Retina даёт скриншот в 2x — много пикселей и токенов. Сжимаем до
+        макс. 1280px по ширине, чтобы VLM работала быстрее без потери читаемости.
+        """
         page = await self.get_page(user_id)
-        return await page.screenshot()
+        raw = await page.screenshot()
+        img = Image.open(BytesIO(raw)).convert("RGB")
+        if img.width > _SCREENSHOT_MAX_WIDTH:
+            ratio = _SCREENSHOT_MAX_WIDTH / img.width
+            img = img.resize((_SCREENSHOT_MAX_WIDTH, int(img.height * ratio)))
+        buf = BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
 
     async def scroll(self, user_id: int, delta: int = 800) -> dict:
         """Прокрутить страницу на delta пикселей вниз."""
